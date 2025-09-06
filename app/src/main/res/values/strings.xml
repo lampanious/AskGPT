@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AskGPT</string>
+    <string name="accessibility_service_description">Monitors any selected text in Chrome browser and displays notifications</string>
+</resources>
