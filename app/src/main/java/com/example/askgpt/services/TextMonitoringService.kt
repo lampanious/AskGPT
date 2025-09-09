@@ -23,21 +23,40 @@ class TextMonitoringService : Service() {
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "TextMonitoringService started")
-        LogManager.addLog(TAG, "TextMonitoringService started", LogLevel.INFO)
+        LogManager.addLog(TAG, "🚀 TextMonitoringService started with enhanced stability", LogLevel.INFO)
         
         return try {
             // Create persistent notification to keep service running
             val notification = notificationHelper.createPersistentNotification()
             startForeground(NOTIFICATION_ID, notification)
-            LogManager.addLog(TAG, "Foreground service started successfully", LogLevel.SUCCESS)
+            LogManager.addLog(TAG, "✅ Foreground service started successfully", LogLevel.SUCCESS)
             
-            START_STICKY // Restart service if killed
+            // Return START_STICKY for automatic restart
+            START_STICKY
         } catch (e: Exception) {
             Log.e(TAG, "Error starting foreground service", e)
-            LogManager.addLog(TAG, "Failed to start foreground service: ${e.message}", LogLevel.ERROR)
-            // If we can't start foreground, stop the service
-            stopSelf()
-            START_NOT_STICKY
+            LogManager.addLog(TAG, "❌ Failed to start foreground service: ${e.message}", LogLevel.ERROR)
+            
+            // Try to restart after a delay
+            restartServiceWithDelay()
+            START_STICKY
+        }
+    }
+    
+    private fun restartServiceWithDelay() {
+        try {
+            // Schedule restart after 5 seconds
+            val restartIntent = Intent(this, TextMonitoringService::class.java)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try {
+                    startService(restartIntent)
+                    LogManager.addLog(TAG, "🔄 Service restarted after delay", LogLevel.INFO)
+                } catch (e: Exception) {
+                    LogManager.addLog(TAG, "❌ Failed to restart service: ${e.message}", LogLevel.ERROR)
+                }
+            }, 5000)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error scheduling service restart", e)
         }
     }
     
@@ -48,6 +67,15 @@ class TextMonitoringService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "TextMonitoringService destroyed")
-        LogManager.addLog(TAG, "TextMonitoringService destroyed", LogLevel.INFO)
+        LogManager.addLog(TAG, "❌ TextMonitoringService destroyed - will restart automatically", LogLevel.WARN)
+        
+        // Try to restart the service automatically
+        try {
+            val restartIntent = Intent(this, TextMonitoringService::class.java)
+            startService(restartIntent)
+            LogManager.addLog(TAG, "🔄 Attempting service restart", LogLevel.INFO)
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "Failed to restart service: ${e.message}", LogLevel.ERROR)
+        }
     }
 }

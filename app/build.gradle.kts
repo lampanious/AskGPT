@@ -12,22 +12,35 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
+        
+        // App metadata for better system recognition
+        manifestPlaceholders["appName"] = "AskGPT"
+        manifestPlaceholders["appDescription"] = "Clipboard Word Count Monitor"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+        debug {
+            isDebuggable = true
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Basic signing for release builds
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     buildFeatures {
         compose = true
+        viewBinding = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
@@ -38,6 +51,11 @@ android {
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.4"
+    }
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
     }
 }
 
@@ -54,7 +72,16 @@ dependencies {
     
     // Additional dependencies for the app functionality
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.6.1")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.6.1")
+    implementation("androidx.lifecycle:lifecycle-process:2.6.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("androidx.work:work-runtime-ktx:2.8.1")
+    implementation("androidx.core:core-splashscreen:1.0.1")
+    
+    // Essential Android components
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.fragment:fragment-ktx:1.6.1")
+    implementation("com.google.android.material:material:1.10.0")
     
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

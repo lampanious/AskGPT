@@ -7,7 +7,11 @@
     <color name="teal_200">#FF03DAC5</color>
     <color name="teal_700">#FF018786</color>
     <color name="white">#FFFFFFFF</color>
-    <string name="accessibility_service_description">Monitors any selected text in Chrome browser and displays notifications</string>
+    <string name="accessibility_service_description">AskGPT monitors clipboard changes and displays word count notifications to help with text processing and productivity.</string>
     <string name="app_name">AskGPT</string>
-    <style name="Theme.AskGPT" parent="android:Theme.Material.Light.NoActionBar"/>
+    <style name="Theme.AskGPT" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

@@ -102,12 +102,12 @@ class TextOverlayService : Service() {
             windowManager?.addView(overlayView, params)
             isOverlayShowing = true
             
-            LogManager.addLog(TAG, "Text overlay shown for 3 seconds", LogLevel.SUCCESS)
+            LogManager.addLog(TAG, "Text overlay shown immediately for selected text", LogLevel.SUCCESS)
             
-            // Auto-hide after 3 seconds
+            // Auto-hide after 5 seconds to give more time to read
             overlayView?.postDelayed({
                 hideTextOverlay()
-            }, 3000)
+            }, 5000)
             
         } catch (e: Exception) {
             Log.e(TAG, "Error showing text overlay", e)

@@ -4,7 +4,7 @@
     "type": "COMPATIBLE_SCREEN_MANIFEST",
     "kind": "Directory"
   },
-  "applicationId": "com.example.askgpt",
+  "applicationId": "com.example.askgpt.debug",
   "variantName": "debug",
   "elements": []
 }

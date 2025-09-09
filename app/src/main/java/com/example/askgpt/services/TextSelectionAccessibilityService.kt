@@ -1,145 +1,152 @@
 package com.example.askgpt.services
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
-import android.text.TextUtils
 import android.util.Log
 import com.example.askgpt.data.SelectedTextManager
 import com.example.askgpt.utils.LogManager
 import com.example.askgpt.utils.LogLevel
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.*
 
+/**
+ * Lightweight accessibility service that monitors clipboard changes only.
+ * 
+ * Optimized for performance:
+ * - Minimal event monitoring (only clicks)
+ * - Background thread processing
+ * - Efficient clipboard polling
+ * - No heavy UI operations
+ */
 class TextSelectionAccessibilityService : AccessibilityService() {
     
     private val TAG = "TextSelectionService"
-    private var lastSelectedText: String? = null
-    private var selectionStartTime: Long = 0
-    private val handler = Handler(Looper.getMainLooper())
-    private var checkSelectionRunnable: Runnable? = null
+    private var clipboardManager: ClipboardManager? = null
+    private var lastClipboardText: String? = null
+    
+    // Use coroutines for background processing
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var clipboardCheckJob: Job? = null
+    
+    // Lightweight handler for minimal UI operations
+    private val mainHandler = Handler(Looper.getMainLooper())
     
     companion object {
-        private const val SELECTION_DURATION_THRESHOLD = 7000L // 7 seconds
+        private const val CLIPBOARD_CHECK_INTERVAL = 2000L // Check every 2 seconds
+        private const val MAX_TEXT_LENGTH = 10000 // Limit text length to prevent memory issues
     }
-    
+
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.d(TAG, "Accessibility service connected")
-        LogManager.addLog(TAG, "Accessibility service connected", LogLevel.SUCCESS)
-    }
-    
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
-        
-        val packageName = event.packageName?.toString()
-        
-        // Only process events from Chrome browsers
-        if (!isChromePackage(packageName)) {
-            return
-        }
-        
-        // Only handle text selection events
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
-            LogManager.addLog(TAG, "Text selection event from Chrome", LogLevel.INFO)
-            handleTextSelection(event)
-        }
-    }
-    
-    private fun handleTextSelection(event: AccessibilityEvent) {
-        // Get selected text directly from event (no child node searching)
-        val selectedText = getSelectedTextFromEvent(event)
-        
-        if (!selectedText.isNullOrEmpty() && selectedText.trim().isNotEmpty()) {
-            val trimmedText = selectedText.trim()
+        try {
+            clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             
-            // Check if this is a new selection
-            if (trimmedText != lastSelectedText) {
-                lastSelectedText = trimmedText
-                selectionStartTime = System.currentTimeMillis()
-                
-                LogManager.addLog(TAG, "New text selected: \"$trimmedText\"", LogLevel.INFO)
-                
-                // Cancel previous check
-                checkSelectionRunnable?.let { handler.removeCallbacks(it) }
-                
-                // Schedule check after 7 seconds
-                checkSelectionRunnable = Runnable {
-                    if (lastSelectedText == trimmedText) {
-                        LogManager.addLog(TAG, "✅ Text selected for 7+ seconds: \"$trimmedText\"", LogLevel.SUCCESS)
-                        
-                        // Save and show overlay
-                        SelectedTextManager.addSelectedText(trimmedText)
-                        TextOverlayService.showOverlay(this, trimmedText)
-                    }
-                }
-                handler.postDelayed(checkSelectionRunnable!!, SELECTION_DURATION_THRESHOLD)
-            }
-        } else {
-            // Selection cleared
-            if (lastSelectedText != null) {
-                LogManager.addLog(TAG, "Text selection cleared", LogLevel.DEBUG)
-                lastSelectedText = null
-                checkSelectionRunnable?.let { handler.removeCallbacks(it) }
-            }
+            // Start lightweight clipboard monitoring
+            startClipboardMonitoring()
+            
+            Log.d(TAG, "Lightweight accessibility service connected")
+            LogManager.addLog(TAG, "✅ Lightweight service connected", LogLevel.SUCCESS)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error connecting accessibility service", e)
+            LogManager.addLog(TAG, "❌ Error connecting: ${e.message}", LogLevel.ERROR)
         }
     }
     
-    private fun getSelectedTextFromEvent(event: AccessibilityEvent): String? {
-        // Method 1: Get text from event selection indices
-        if (!event.text.isNullOrEmpty()) {
-            val eventText = event.text.joinToString(" ").trim()
-            if (eventText.isNotEmpty()) {
-                LogManager.addLog(TAG, "Found text in event: \"$eventText\"", LogLevel.DEBUG)
-                return eventText
-            }
-        }
+    private fun startClipboardMonitoring() {
+        // Cancel any existing monitoring
+        clipboardCheckJob?.cancel()
         
-        // Method 2: Get from source node selection indices (no child searching)
-        val source = event.source
-        if (source != null) {
-            val nodeText = source.text?.toString()
-            if (!nodeText.isNullOrEmpty() && source.textSelectionStart >= 0 && source.textSelectionEnd > source.textSelectionStart) {
+        // Start background clipboard monitoring
+        clipboardCheckJob = serviceScope.launch {
+            while (isActive) {
                 try {
-                    val selectedText = nodeText.substring(source.textSelectionStart, source.textSelectionEnd)
-                    if (selectedText.isNotEmpty()) {
-                        LogManager.addLog(TAG, "Found selected text via indices: \"$selectedText\"", LogLevel.DEBUG)
-                        source.recycle()
-                        return selectedText
-                    }
+                    checkClipboardSafely()
+                    delay(CLIPBOARD_CHECK_INTERVAL)
                 } catch (e: Exception) {
-                    LogManager.addLog(TAG, "Error extracting selection: ${e.message}", LogLevel.ERROR)
+                    Log.e(TAG, "Error in clipboard monitoring", e)
+                    delay(5000) // Wait longer if there's an error
                 }
             }
-            source.recycle()
         }
-        
-        return null
+    }    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Only process click events to detect potential copy actions
+        if (event?.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            // Process in background to avoid blocking UI
+            serviceScope.launch {
+                try {
+                    // Small delay then check clipboard
+                    delay(500)
+                    checkClipboardSafely()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing click event", e)
+                }
+            }
+        }
     }
     
-    private fun isChromePackage(packageName: String?): Boolean {
-        val isChrome = packageName?.let { pkg ->
-            pkg.contains("chrome") || 
-            pkg == "com.android.chrome" ||
-            pkg == "com.chrome.beta" ||
-            pkg == "com.chrome.dev" ||
-            pkg == "com.google.android.apps.chrome" ||
-            pkg == "com.chrome.canary" ||
-            pkg.contains("browser")
-        } ?: false
-        
-        if (isChrome) {
-            LogManager.addLog(TAG, "✅ Chrome package detected: $packageName", LogLevel.SUCCESS)
+    private suspend fun checkClipboardSafely() {
+        try {
+            withContext(Dispatchers.Main) {
+                val clipData = clipboardManager?.primaryClip
+                if (clipData != null && clipData.itemCount > 0) {
+                    val clipText = clipData.getItemAt(0).text?.toString()
+                    
+                    if (!clipText.isNullOrEmpty() && clipText.trim() != lastClipboardText) {
+                        val trimmedText = clipText.trim()
+                        
+                        // Limit text length to prevent memory issues
+                        val limitedText = if (trimmedText.length > MAX_TEXT_LENGTH) {
+                            trimmedText.substring(0, MAX_TEXT_LENGTH) + "..."
+                        } else {
+                            trimmedText
+                        }
+                        
+                        lastClipboardText = limitedText
+                        
+                        LogManager.addLog(TAG, "📋 Clipboard text: \"${limitedText.take(50)}...\"", LogLevel.SUCCESS)
+                        
+                        // Show overlay (this is lightweight)
+                        SelectedTextManager.addSelectedText(limitedText)
+                        TextOverlayService.showOverlay(this@TextSelectionAccessibilityService, limitedText)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking clipboard safely", e)
         }
-        
-        return isChrome
     }
-    
+
     override fun onInterrupt() {
         Log.d(TAG, "Accessibility service interrupted")
-        // Clean up
-        lastSelectedText = null
-        checkSelectionRunnable?.let { handler.removeCallbacks(it) }
+        LogManager.addLog(TAG, "🔄 Service interrupted", LogLevel.WARN)
+        cleanupResources()
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "Accessibility service destroyed")
+        LogManager.addLog(TAG, "❌ Service destroyed", LogLevel.ERROR)
+        cleanupResources()
+    }
+    
+    private fun cleanupResources() {
+        try {
+            // Cancel all background jobs
+            clipboardCheckJob?.cancel()
+            serviceScope.cancel()
+            
+            // Clear references
+            lastClipboardText = null
+            clipboardManager = null
+            
+            // Remove any pending handler callbacks
+            mainHandler.removeCallbacksAndMessages(null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during cleanup", e)
+        }
     }
 }

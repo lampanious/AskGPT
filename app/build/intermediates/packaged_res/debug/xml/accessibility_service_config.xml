@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeViewTextSelectionChanged|typeWindowContentChanged|typeViewClicked|typeViewFocused|typeViewSelected"
+    android:description="@string/accessibility_service_description"
+    android:packageNames="com.android.systemui,com.miui.home,com.android.chrome,com.android.browser,com.example.askgpt"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
+    android:notificationTimeout="100"
     android:canRetrieveWindowContent="true"
-    android:packageNames="com.android.chrome,com.chrome.beta,com.chrome.dev,com.google.android.apps.chrome"
-    android:description="@string/accessibility_service_description" />
+    android:canRequestTouchExplorationMode="false"
+    android:settingsActivity="com.example.askgpt.MainActivity" />
