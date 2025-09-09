@@ -31,6 +31,12 @@ class ClipboardMonitoringService : Service() {
     private var latestDisplayChar: String = "🔄"
     private var latestDetectionTime: Long = 0L
     
+    // Enhanced interval-based detection variables
+    private var currentCheckInterval: Long = CLIPBOARD_CHECK_INTERVAL
+    private var lastContentHash: String? = null
+    private var consecutiveNoChanges: Int = 0
+    private var isHighActivityMode: Boolean = false
+    
     // Use coroutines for background processing
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var clipboardCheckJob: Job? = null
@@ -41,14 +47,21 @@ class ClipboardMonitoringService : Service() {
         serviceScope.launch {
             Log.d(TAG, "🔥 CLIPBOARD LISTENER TRIGGERED!")
             LogManager.addLog(TAG, "⚡ Clipboard change detected by listener!", LogLevel.INFO)
-            checkClipboardSafely()
+            checkClipboardForChanges()
         }
     }
     
     companion object {
-        private const val CLIPBOARD_CHECK_INTERVAL = 250L // Reduced to 250ms for faster detection
+        // Business-ready intervals balancing performance and responsiveness
+        private const val CLIPBOARD_CHECK_INTERVAL = 750L // 750ms - optimal for business use (saves battery, still responsive)
+        private const val FAST_CHECK_INTERVAL = 200L // 200ms - fast detection mode when needed
+        private const val SLOW_CHECK_INTERVAL = 2000L // 2s - slow mode for power saving
         private const val MAX_TEXT_LENGTH = 5000 // Limit text length
         private const val NOTIFICATION_ID = 1002
+        
+        // Content change detection settings
+        private const val MIN_CONTENT_CHANGE_LENGTH = 2 // Minimum characters to consider a real change
+        private const val CONTENT_SIMILARITY_THRESHOLD = 0.9 // 90% similarity threshold
         
         /**
          * Calculate display character based on word count rules:
@@ -134,7 +147,7 @@ class ClipboardMonitoringService : Service() {
             // Force an immediate clipboard check to show the notification
             serviceScope.launch {
                 delay(500) // Reduced delay for faster initial detection
-                checkClipboardSafely()
+                checkClipboardForChanges()
             }
             
             // Return START_STICKY for automatic restart if killed by system
@@ -161,19 +174,25 @@ class ClipboardMonitoringService : Service() {
         // Cancel any existing monitoring
         clipboardCheckJob?.cancel()
         
-        Log.d(TAG, "Starting persistent clipboard monitoring...")
-        LogManager.addLog(TAG, "🔄 Starting persistent clipboard monitoring", LogLevel.INFO)
+        Log.d(TAG, "Starting intelligent clipboard monitoring with adaptive intervals...")
+        LogManager.addLog(TAG, "🧠 Starting smart clipboard monitoring (${currentCheckInterval}ms interval)", LogLevel.INFO)
         
-        // Start background clipboard monitoring with restart capability
+        // Start background clipboard monitoring with adaptive intervals
         clipboardCheckJob = serviceScope.launch {
             var consecutiveErrors = 0
             val maxConsecutiveErrors = 5
             
             while (isActive) {
                 try {
-                    checkClipboardSafely()
+                    // Check for content changes with business logic
+                    val hadSignificantChange = checkClipboardForChanges()
+                    
+                    // Adaptive interval adjustment based on activity
+                    adjustCheckInterval(hadSignificantChange)
+                    
                     consecutiveErrors = 0 // Reset error count on success
-                    delay(CLIPBOARD_CHECK_INTERVAL)
+                    delay(currentCheckInterval)
+                    
                 } catch (e: Exception) {
                     consecutiveErrors++
                     Log.e(TAG, "Error in clipboard monitoring (attempt $consecutiveErrors)", e)
@@ -184,6 +203,7 @@ class ClipboardMonitoringService : Service() {
                         LogManager.addLog(TAG, "🔄 Restarting monitoring due to errors", LogLevel.WARN)
                         delay(5000) // Wait 5 seconds before restart
                         consecutiveErrors = 0
+                        currentCheckInterval = CLIPBOARD_CHECK_INTERVAL // Reset to default
                     } else {
                         delay(2000) // Wait 2 seconds on error for faster recovery
                     }
@@ -192,15 +212,53 @@ class ClipboardMonitoringService : Service() {
         }
     }
     
-    private suspend fun checkClipboardSafely() {
-        try {
+    /**
+     * Adjust checking interval based on clipboard activity (business optimization)
+     */
+    private fun adjustCheckInterval(hadChange: Boolean) {
+        if (hadChange) {
+            consecutiveNoChanges = 0
+            isHighActivityMode = true
+            currentCheckInterval = FAST_CHECK_INTERVAL
+            LogManager.addLog(TAG, "⚡ Fast mode: ${currentCheckInterval}ms (activity detected)", LogLevel.DEBUG)
+        } else {
+            consecutiveNoChanges++
+            
+            when {
+                consecutiveNoChanges > 20 && isHighActivityMode -> {
+                    // Switch to normal mode after 20 checks without changes
+                    isHighActivityMode = false
+                    currentCheckInterval = CLIPBOARD_CHECK_INTERVAL
+                    LogManager.addLog(TAG, "🔄 Normal mode: ${currentCheckInterval}ms", LogLevel.DEBUG)
+                }
+                consecutiveNoChanges > 50 -> {
+                    // Switch to slow mode for power saving
+                    currentCheckInterval = SLOW_CHECK_INTERVAL
+                    LogManager.addLog(TAG, "🐌 Power saving mode: ${currentCheckInterval}ms", LogLevel.DEBUG)
+                }
+            }
+        }
+    }
+    
+    /**
+     * Enhanced clipboard checking with content change detection
+     * Returns true if significant change was detected
+     */
+    private suspend fun checkClipboardForChanges(): Boolean {
+        return try {
             withContext(Dispatchers.Main) {
                 val clipData = clipboardManager?.primaryClip
                 
                 if (clipData != null && clipData.itemCount > 0) {
                     val clipText = clipData.getItemAt(0).text?.toString()
                     
-                    if (!clipText.isNullOrEmpty() && clipText.trim() != lastClipboardText) {
+                    // Generate content hash for comparison
+                    val newContentHash = clipText?.hashCode()?.toString()
+                    
+                    // Check if content has meaningful changes
+                    val hasSignificantChange = hasSignificantContentChange(lastClipboardText, clipText)
+                    
+                    if (hasSignificantChange && !clipText.isNullOrEmpty()) {
                         val trimmedText = clipText.trim()
                         
                         // Limit text length to prevent memory issues
@@ -212,14 +270,15 @@ class ClipboardMonitoringService : Service() {
                         
                         // Update tracking variables
                         lastClipboardText = limitedText
+                        lastContentHash = newContentHash
                         
                         // Store in temporary variables for immediate notification
                         latestClipboardText = limitedText
                         latestDisplayChar = calculateDisplayCharacter(limitedText)
                         latestDetectionTime = System.currentTimeMillis()
                         
-                        Log.d(TAG, "NEW CLIPBOARD DETECTED! Text: ${limitedText.take(50)}... -> Display: $latestDisplayChar")
-                        LogManager.addLog(TAG, "🔥 IMMEDIATE DETECTION: \"${limitedText.take(50)}...\" -> $latestDisplayChar", LogLevel.SUCCESS)
+                        Log.d(TAG, "📋 SIGNIFICANT CHANGE DETECTED! Text: ${limitedText.take(50)}... -> Display: $latestDisplayChar")
+                        LogManager.addLog(TAG, "🔥 CONTENT CHANGE: \"${limitedText.take(50)}...\" -> $latestDisplayChar", LogLevel.SUCCESS)
                         
                         // Update selected text for history
                         SelectedTextManager.addSelectedText(limitedText)
@@ -227,13 +286,18 @@ class ClipboardMonitoringService : Service() {
                         // IMMEDIATE notification update based on latest detection signal
                         updateForegroundNotificationImmediately()
                         
+                        return@withContext true // Significant change detected
+                        
                     } else {
-                        Log.d(TAG, "Clipboard text unchanged or empty")
+                        Log.d(TAG, "Clipboard content unchanged or insignificant change")
+                        return@withContext false
                     }
                 } else {
                     // Handle null clipboard case
-                    if (latestClipboardText != null) {
+                    if (lastContentHash != null) {
                         // Only update if we had previous content
+                        lastClipboardText = null
+                        lastContentHash = null
                         latestClipboardText = null
                         latestDisplayChar = calculateDisplayCharacter(null)
                         latestDetectionTime = System.currentTimeMillis()
@@ -242,9 +306,11 @@ class ClipboardMonitoringService : Service() {
                         LogManager.addLog(TAG, "🗑️ Clipboard cleared -> $latestDisplayChar", LogLevel.INFO)
                         
                         updateForegroundNotificationImmediately()
+                        return@withContext true // Change detected (cleared)
                     } else {
                         // No previous content, no action needed
                         Log.d(TAG, "No clipboard data and no previous content")
+                        return@withContext false
                     }
                 }
             }
@@ -256,7 +322,40 @@ class ClipboardMonitoringService : Service() {
             latestClipboardText = "Error reading clipboard"
             latestDetectionTime = System.currentTimeMillis()
             updateForegroundNotificationImmediately()
+            false // No change detected due to error
         }
+    }
+    
+    /**
+     * Check if content has meaningful changes (business logic)
+     */
+    private fun hasSignificantContentChange(oldContent: String?, newContent: String?): Boolean {
+        // Null/empty handling
+        if (oldContent == newContent) return false
+        if (oldContent.isNullOrEmpty() && newContent.isNullOrEmpty()) return false
+        if (oldContent.isNullOrEmpty() || newContent.isNullOrEmpty()) return true
+        
+        // Length-based change detection
+        val lengthDiff = kotlin.math.abs(oldContent.length - newContent.length)
+        if (lengthDiff < MIN_CONTENT_CHANGE_LENGTH) return false
+        
+        // Simple similarity check (prevents minor clipboard fluctuations)
+        val similarity = calculateSimilarity(oldContent, newContent)
+        return similarity < CONTENT_SIMILARITY_THRESHOLD
+    }
+    
+    /**
+     * Calculate content similarity (simple approach for performance)
+     */
+    private fun calculateSimilarity(text1: String, text2: String): Double {
+        val maxLength = maxOf(text1.length, text2.length)
+        if (maxLength == 0) return 1.0
+        
+        // Simple character-based similarity for performance
+        val commonChars = text1.toSet().intersect(text2.toSet()).size
+        val totalChars = text1.toSet().union(text2.toSet()).size
+        
+        return if (totalChars == 0) 1.0 else commonChars.toDouble() / totalChars.toDouble()
     }
     
     private fun updateForegroundNotificationImmediately() {

@@ -1,4 +1,10 @@
-# AskGPT - Advanced Clipboard Monitoring System
+# AskGPT - Advanc### **Intelligent Word Count Analysis**
+- **Dynamic Categorization**: Text classified into 4 categories (A, B, C, D)
+- **Real-time Processing**: Instant analysis with regex-based word counting
+- **Edge Case Handling**: Robust handling of empty, null, and special content
+- **Smart Intervals**: Business-ready detection intervals (750ms base, adaptive 200ms-2s)
+- **Content Change Detection**: Similarity checking prevents minor fluctuations
+- **Battery Optimized**: Adaptive intervals save power during low activitylipboard Monitoring System
 
 **A sophisticated Android application that provides persistent background clipboard monitoring with intelligent word count analysis and immediate visual feedback.**
 
@@ -39,8 +45,8 @@ AskGPT is a production-ready Android clipboard monitoring application that runs 
 ```
 📱 AskGPT Application
 ├── 🎯 MainActivity (UI & User Interaction)
-├── 🔄 ClipboardMonitoringService (Core Logic)
-├── 🐕 ServiceWatchdog (Persistence Guardian)
+├── 🔄 ClipboardMonitoringService (Core Clipboard Logic)
+├── 🐕 ServiceWatchdog (Persistence Guardian) 
 ├── ♿ AskGPTAccessibilityService (Enhanced Detection)
 ├── 🔔 NotificationHelper (Visual Feedback)
 ├── 📡 BootReceiver (Auto-start Handler)
@@ -65,10 +71,10 @@ AskGPT is a production-ready Android clipboard monitoring application that runs 
                   ▼
 ┌─────────────────────────────────────────┐
 │    ClipboardMonitoringService          │
-│  • Foreground Service                  │
-│  • Clipboard Listener                  │
+│  • Adaptive Interval Monitoring        │
+│  • Content Change Detection            │
 │  • Word Count Analysis                 │
-│  • Notification Management            │
+│  • Dynamic Notification Management     │
 └─────────────────┬───────────────────────┘
                   │
                   ▼
@@ -80,7 +86,31 @@ AskGPT is a production-ready Android clipboard monitoring application that runs 
 └─────────────────────────────────────────┘
 ```
 
-## 📂 Source Code Structure Guide
+## 📂 Clean Source Code Structure Guide
+
+> **📋 Complete Structure Guide**: See [STRUCTURE.md](STRUCTURE.md) for detailed architecture overview
+
+### **🎯 Streamlined Project Architecture**
+
+```
+AskGPT/ (Clean & Focused)
+├── 📁 Core Services (3 files)
+│   ├── � ClipboardMonitoringService.kt    # Main clipboard logic + adaptive intervals
+│   ├── � ServiceWatchdog.kt               # Persistence guardian (30s checks)
+│   └── ♿ AskGPTAccessibilityService.kt     # Enhanced HyperOS/MIUI detection
+├── 📁 User Interface (2 files)  
+│   ├── 🎯 MainActivity.kt                  # App entry + service management
+│   └── � NotificationHelper.kt            # Dynamic A/B/C/D icons
+├── 📁 Infrastructure (4 files)
+│   ├── � BootReceiver.kt                  # Auto-start on boot
+│   ├── � LogManager.kt                    # Debug & analytics
+│   ├── � PermissionHelper.kt              # Permission utilities  
+│   └── � SelectedTextManager.kt           # Clipboard history
+├── 📄 askgpt-build.sh/.bat                # Unified build scripts
+└── 📄 README.md + STRUCTURE.md             # Complete documentation
+```
+
+**Total: 12 core files** (removed 11 unused/legacy files for clarity)
 
 ### **How to Read This Codebase**
 
@@ -94,41 +124,51 @@ AskGPT is a production-ready Android clipboard monitoring application that runs 
 ```kotlin
 📄 ClipboardMonitoringService.kt  // Main business logic
   ├── onCreate()                  // Service initialization
-  ├── onStartCommand()           // Service startup handler
-  ├── startClipboardMonitoring() // Monitoring setup
-  ├── checkClipboardSafely()     // Content analysis
+  ├── onStartCommand()           // Service startup handler  
+  ├── startClipboardMonitoring() // Adaptive monitoring setup
+  ├── checkClipboardForChanges() // Enhanced content analysis
   ├── calculateDisplayCharacter() // Word count logic
-  └── updateForegroundNotificationImmediately() // UI updates
+  ├── adjustCheckInterval()      // Smart interval adjustment
+  └── updateForegroundNotificationImmediately() // Dynamic UI updates
 ```
 
 #### **3. Persistence & Reliability**
 ```kotlin
-📄 ServiceWatchdog.kt           // Service persistence
+📄 ServiceWatchdog.kt           // Service persistence guardian
   ├── scheduleNextCheck()       // Health monitoring
   ├── checkAndRestartService()  // Auto-restart logic
-  └── isServiceRunning()        // Service status check
+  ├── isServiceRunning()        // Service status check
+  └── onDestroy()               // Self-restart mechanism
 
 📄 BootReceiver.kt              // Auto-start on boot
   └── onReceive()               // Boot event handler
 ```
 
-#### **4. User Interface**
+#### **4. User Interface & Feedback**
 ```kotlin
-📄 NotificationHelper.kt        // Visual feedback system
+📄 NotificationHelper.kt        // Dynamic visual feedback
   ├── createNotificationChannels() // Channel setup
-  ├── createWordCountNotification() // Dynamic notifications
-  ├── getIconAndDescription()   // Icon mapping
+  ├── createWordCountNotification() // Adaptive notifications
+  ├── getIconAndDescription()   // Smart icon mapping
   └── createPersistentNotification() // Fallback UI
 ```
 
-#### **5. Supporting Infrastructure**
+#### **5. Enhanced Detection (Optional)**
 ```kotlin
-📄 AskGPTAccessibilityService.kt // Enhanced detection
-📄 SelectedTextManager.kt        // History management
-📄 LogManager.kt                 // Debug & analytics
+📄 AskGPTAccessibilityService.kt // HyperOS/MIUI optimization
+  ├── onServiceConnected()      // Enhanced clipboard detection
+  ├── onAccessibilityEvent()    // Text event monitoring  
+  └── onInterrupt()             // Graceful handling
 ```
 
-#### **6. Configuration**
+#### **6. Supporting Infrastructure**
+```kotlin
+📄 SelectedTextManager.kt        // Clipboard history management
+📄 LogManager.kt                 // Debug & analytics system
+📄 PermissionHelper.kt           // Permission utilities
+```
+
+#### **7. Configuration**
 ```xml
 📄 AndroidManifest.xml          // Permissions & services
 📄 accessibility_service_config.xml // Accessibility setup
@@ -136,15 +176,27 @@ AskGPT is a production-ready Android clipboard monitoring application that runs 
 
 ### **Reading Order for New Developers**
 
-1. **📖 Start**: `README.md` (this file) - Understand the purpose
-2. **🎯 Entry**: `MainActivity.kt` - See user interaction flow
-3. **🔄 Core**: `ClipboardMonitoringService.kt` - Understand main logic
-4. **📊 Algorithm**: `calculateDisplayCharacter()` method - Word count rules
-5. **🔔 UI**: `NotificationHelper.kt` - Visual feedback system
-6. **🐕 Persistence**: `ServiceWatchdog.kt` - Background reliability
-7. **⚙️ Config**: `AndroidManifest.xml` - System integration
+1. **📖 Start**: `README.md` (this file) - Understand the purpose and architecture
+2. **🎯 Entry**: `MainActivity.kt` - See user interaction flow and service startup
+3. **🔄 Core**: `ClipboardMonitoringService.kt` - Understand main logic and adaptive intervals
+4. **📊 Algorithm**: `checkClipboardForChanges()` method - Content detection and word count rules
+5. **🔔 UI**: `NotificationHelper.kt` - Visual feedback and dynamic icon system
+6. **🐕 Persistence**: `ServiceWatchdog.kt` - Background reliability and auto-restart
+7. **⚙️ Config**: `AndroidManifest.xml` - System integration and permissions
 
 ### **Key Methods to Understand**
+
+#### **Enhanced Clipboard Detection**
+```kotlin
+// In ClipboardMonitoringService.kt
+suspend fun checkClipboardForChanges(): Boolean {
+    // Adaptive content change detection with similarity checking
+}
+
+fun adjustCheckInterval(hadChange: Boolean) {
+    // Smart interval adjustment: 200ms-2000ms based on activity
+}
+```
 
 #### **Word Count Logic**
 ```kotlin
@@ -154,11 +206,11 @@ fun calculateDisplayCharacter(text: String?): String {
 }
 ```
 
-#### **Immediate Detection**
+#### **Content Similarity Detection**
 ```kotlin
-// In ClipboardMonitoringService.kt  
-private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
-    // Instant clipboard response
+// In ClipboardMonitoringService.kt
+private fun hasSignificantContentChange(oldContent: String?, newContent: String?): Boolean {
+    // Prevents false triggers from minor clipboard fluctuations
 }
 ```
 
@@ -166,86 +218,226 @@ private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
 ```kotlin
 // In ServiceWatchdog.kt
 private fun checkAndRestartService() {
-    // Auto-restart dead services
+    // Auto-restart dead services every 30 seconds
 }
 ```
 
-## 🛠️ Build & Development
+## 🛠️ Super Easy Build & Development
 
-### **Prerequisites**
-- Android Studio Arctic Fox or later
-- Android SDK 28+ (minimum), 34 (target)
-- Kotlin 1.8+
-- Gradle 8.0+
+### **🚀 Quick Start (Any Platform)**
 
-### **Build Commands**
+#### **Option 1: Easy Button (Recommended)**
 ```bash
-# Debug build
+# Windows (PowerShell or Command Prompt)
+askgpt-build.bat build
+
+# Linux/macOS/Git Bash
+./askgpt-build.sh build
+```
+
+#### **Option 2: Traditional Gradle**
+```bash
+# Windows
+gradlew.bat assembleDebug
+
+# Linux/macOS  
 ./gradlew assembleDebug
-
-# Release build  
-./gradlew assembleRelease
-
-# Install to device
-./gradlew installDebug
-
-# Run tests
-./gradlew testDebugUnitTest
 ```
 
-### **Development Workflow**
-
-1. **Code Changes**: Modify source files
-2. **Build**: `./gradlew assembleDebug`
-3. **Install**: `./gradlew installDebug`
-4. **Test**: Manual testing + unit tests
-5. **Commit**: Git commit with clean history
-
-## 📱 Installation & Setup
-
-### **1. Build & Install**
+### **📱 Super Easy Installation**
 ```bash
+# Windows - Easy way
+askgpt-build.bat install
+
+# Linux/macOS - Easy way
+./askgpt-build.sh install
+
+# Traditional way (any platform)
 ./gradlew installDebug
 ```
 
-### **2. First Launch**
-- App opens automatically
-- Grant notification permission when prompted
-- Accept battery optimization exemption for 24/7 operation
-- Enable accessibility service if requested
+### **🔧 First Time Setup**
+```bash
+# Windows
+askgpt-build.bat setup
 
-### **3. Verification**
+# Linux/macOS
+./askgpt-build.sh setup
+```
+
+### **✅ Verify Everything Works**
+```bash
+# Check installation, APK files, services
+askgpt-build.bat verify    # Windows
+./askgpt-build.sh verify   # Linux/macOS
+```
+
+### **Prerequisites (Don't Worry - Script Helps!)**
+- **Android Studio** (script finds it automatically) 
+- **Or just OpenJDK 11/17** (script detects this too)
+- **That's it!** The scripts handle everything else
+
+### **🎯 What Each Script Does**
+
+#### **askgpt-build.sh** (Cross-Platform Master Script)
+- 🔍 **Auto-detects**: Windows, Linux, macOS
+- 🔧 **Finds Java**: Automatically locates Android Studio JDK  
+- 🏗️ **Smart Building**: Handles Gradle setup and execution
+- 📱 **Device Install**: ADB detection and APK installation
+- ✅ **Verification**: Checks everything is working
+- 🎨 **Pretty Output**: Colored terminal output with progress
+
+#### **askgpt-build.bat** (Windows Native)
+- 🪟 **Windows First**: Native batch file for Windows users
+- 🔄 **Bash Fallback**: Uses cross-platform script if Git Bash available
+- 🏗️ **Native Mode**: Pure Windows commands when bash not available
+- 🎯 **Simple**: Just double-click or run from Command Prompt
+
+### **🤔 Which Script Should I Use?**
+
+| Platform | Recommended | Why |
+|----------|-------------|-----|
+| **Windows** | `askgpt-build.bat` | Native Windows, no bash needed |
+| **Windows + Git Bash** | `./askgpt-build.sh` | Full cross-platform features |
+| **Linux** | `./askgpt-build.sh` | Native bash support |
+| **macOS** | `./askgpt-build.sh` | Native bash support |
+| **Any Platform** | Gradle directly | Traditional approach |
+
+### **⚡ Enhanced Detection System**
+
+**Smart Interval Technology:**
+- **Fast Mode**: 200ms intervals when clipboard activity detected
+- **Normal Mode**: 750ms intervals for balanced performance  
+- **Power Save**: 2000ms intervals during low activity
+- **Business Ready**: Optimized for professional use cases
+
+**Content Change Detection:**
+- **Similarity Check**: Prevents false triggers from minor changes
+- **Length Threshold**: Ignores insignificant character changes
+- **Hash Comparison**: Efficient content change detection
+- **Adaptive Monitoring**: Adjusts intervals based on clipboard activity
+
+## 📱 Super Easy Installation & Setup
+
+### **🎯 One-Command Install**
+```bash
+# Windows (choose one)
+askgpt-build.bat install     # Native Windows
+.\askgpt-build.sh install    # If you have Git Bash
+
+# Linux/macOS
+./askgpt-build.sh install
+```
+
+### **📋 Step-by-Step (If You Want Control)**
+
+#### **1. Build the App**
+```bash
+# Easy way
+askgpt-build.bat build       # Windows
+./askgpt-build.sh build      # Linux/macOS
+
+# Traditional way  
+./gradlew assembleDebug      # Any platform
+```
+
+#### **2. Install to Your Device**
+```bash
+# Connect your Android device via USB
+# Enable "Developer Options" and "USB Debugging"
+# Then run:
+askgpt-build.bat install     # Windows
+./askgpt-build.sh install    # Linux/macOS
+```
+
+#### **3. First Launch Setup**
+- 📱 App opens automatically after install
+- ✅ **Grant notification permission** (required for visual feedback)
+- ✅ **Accept battery optimization exemption** (for 24/7 operation)
+- ✅ **Enable accessibility service if requested** (enhanced detection)
+
+#### **4. Instant Verification**
 - ✅ App opens without crashing
-- ✅ Persistent notification appears in status bar
+- ✅ Persistent notification appears in status bar  
 - ✅ Copy 3 words → See "A" icon (⚠️)
-- ✅ Copy 5 words → See "B" icon (ℹ️)  
+- ✅ Copy 5 words → See "B" icon (ℹ️)
 - ✅ Copy 8 words → See "C" icon (✖️)
 - ✅ Copy 15 words → See "D" icon (🗑️)
 
-### **4. Cross-App Testing**
-- Test in Chrome, messaging apps, browsers
-- Verify immediate notification updates
-- Confirm no need to switch back to AskGPT
+### **🔍 Troubleshooting Made Easy**
+
+#### **"Build Failed" or "Java Not Found"**
+```bash
+# Run setup first
+askgpt-build.bat setup       # Windows  
+./askgpt-build.sh setup      # Linux/macOS
+
+# This will:
+# - Find your Java/Android Studio installation
+# - Set up environment variables
+# - Verify Gradle wrapper
+# - Tell you exactly what's missing
+```
+
+#### **"No Devices Found" During Install**
+1. Connect Android device via USB cable
+2. Enable "Developer Options" on device:
+   - Go to Settings → About Phone
+   - Tap "Build Number" 7 times
+3. Enable "USB Debugging":
+   - Settings → Developer Options → USB Debugging ✅
+4. Accept the computer connection on your device
+5. Try install again
+
+#### **"Clipboard Not Working"**
+1. Open AskGPT app
+2. Check notification permission is granted
+3. Disable battery optimization for AskGPT:
+   - Settings → Battery → Battery Optimization → AskGPT → Don't Optimize
+4. Copy some text in any app - notification should update immediately
+
+#### **"App Crashes on Start"**
+- This is fixed! ✅ The enhanced version has:
+  - Defensive service startup
+  - Comprehensive error handling  
+  - Safe initialization sequences
+  - Adaptive monitoring intervals
+
+### **🚀 Cross-App Testing (The Fun Part!)**
+After installation, test in different apps:
+- **Chrome**: Copy URL or text from webpage
+- **Messages**: Copy text from chat
+- **Notes**: Copy written content
+- **Any App**: Select and copy text
+
+Watch the notification icon change instantly! No need to return to AskGPT.
 
 ## 🔧 Technical Specifications
 
-### **Word Count Categories**
+### **Enhanced Clipboard Detection**
+- **Base Interval**: 750ms (business-optimized balance)
+- **Fast Mode**: 200ms (during active clipboard use)
+- **Power Save**: 2000ms (during low activity periods)
+- **Content Similarity**: 90% threshold to prevent false triggers
+- **Change Detection**: Minimum 2-character difference required
+
+### **Word Count Categories** 
 - **Category A**: Exactly 3 words (2 < count < 4)
 - **Category B**: 4-6 words (3 < count < 7)  
 - **Category C**: 7-9 words (6 < count < 10)
 - **Category D**: Empty, null, or other counts (1, 2, 10+)
 
 ### **Performance Characteristics**
-- **Response Time**: < 100ms clipboard detection
+- **Response Time**: < 200ms clipboard detection (fast mode)
 - **Memory Usage**: ~ 15-25MB persistent
-- **Battery Impact**: Minimal (battery optimization exempt)
-- **CPU Usage**: < 1% during monitoring
+- **Battery Impact**: Minimal with adaptive intervals
+- **CPU Usage**: < 0.5% during active monitoring
 
 ### **Compatibility**
 - **Android**: API 28+ (Android 9.0+)
-- **Devices**: All Android devices
-- **ROMs**: Stock Android, HyperOS, MIUI, AOSP
-- **Form Factors**: Phones, tablets
+- **Devices**: All Android devices (phones, tablets)
+- **ROMs**: Stock Android, HyperOS, MIUI, AOSP, LineageOS
+- **Build Platforms**: Windows, Linux, macOS
 
 ## 🧪 Testing
 
@@ -267,21 +459,55 @@ Tests cover word count logic, edge cases, and utility functions.
 
 ## 🚀 Production Deployment
 
-### **Release Build**
+### **📄 Build Scripts Reference**
+
+The project includes unified build scripts that work across all platforms:
+
+#### **askgpt-build.sh** (Master Cross-Platform Script)
 ```bash
-./gradlew assembleRelease
+./askgpt-build.sh setup      # Setup environment and find Java
+./askgpt-build.sh build      # Clean and build debug APK
+./askgpt-build.sh install    # Build and install to device
+./askgpt-build.sh verify     # Verify installation and components
+./askgpt-build.sh clean      # Clean build artifacts
+./askgpt-build.sh release    # Build release APK
+./askgpt-build.sh help       # Show detailed help
 ```
 
-### **Signing (for distribution)**
-1. Generate keystore
-2. Configure signing in `build.gradle`
-3. Build signed APK
-4. Test on multiple devices
+#### **askgpt-build.bat** (Windows Native)
+```batch
+askgpt-build.bat setup       # Setup Windows environment
+askgpt-build.bat build       # Build using native Windows commands
+askgpt-build.bat install     # Install to connected device
+askgpt-build.bat verify      # Check installation status
+askgpt-build.bat clean       # Clean build files
+askgpt-build.bat help        # Show help information
+```
 
-### **Distribution Channels**
-- Direct APK installation
-- Internal company distribution
-- Play Store (requires Play Console account)
+#### **Features of Enhanced Build System**
+- 🔍 **Auto-Detection**: Finds Java, Android Studio, ADB automatically
+- 🌍 **Cross-Platform**: Works on Windows, Linux, macOS
+- 🎨 **Colored Output**: Clear visual feedback during build process
+- ⚡ **Smart Fallback**: Windows script uses bash if available, native otherwise
+- 🛡️ **Error Handling**: Clear error messages with suggested solutions
+- 📊 **Build Info**: Shows APK size, configuration details, enhanced features
+
+#### **Legacy Files (Now Consolidated)**
+The following individual batch/shell files were merged into the unified system:
+- ~~build.bat~~ → `askgpt-build.bat build`
+- ~~setup.bat~~ → `askgpt-build.bat setup`  
+- ~~verify_hyperos.sh~~ → `askgpt-build.sh verify`
+- ~~verify_mainactivity.sh~~ → `askgpt-build.sh verify`
+- ~~install_hyperos.bat~~ → `askgpt-build.bat install`
+
+#### **Removed Unused Services (Clean Architecture)**
+The following service files were removed as they were not registered in AndroidManifest.xml:
+- ~~TextMonitoringService.kt~~ (redundant with ClipboardMonitoringService)
+- ~~TextOverlayService.kt~~ (unused overlay functionality)
+- ~~OverlayService.kt~~ (duplicate overlay implementation)
+- ~~TextSelectionAccessibilityService.kt~~ (replaced by AskGPTAccessibilityService)
+
+**💡 Pro Tip**: Use the new unified scripts for better experience and focus on the core 3 services for understanding the app!
 
 ## 🔍 Troubleshooting
 

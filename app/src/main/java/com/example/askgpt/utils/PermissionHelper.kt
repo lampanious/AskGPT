@@ -24,7 +24,7 @@ object PermissionHelper {
     }
     
     fun isAccessibilityServiceEnabled(context: Context): Boolean {
-        val serviceName = "${context.packageName}/.services.TextSelectionAccessibilityService"
+        val serviceName = "${context.packageName}/.services.AskGPTAccessibilityService"
         val enabledServices = Settings.Secure.getString(
             context.contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
