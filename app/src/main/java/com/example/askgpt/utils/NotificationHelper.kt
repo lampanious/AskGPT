@@ -123,6 +123,7 @@ class NotificationHelper(private val context: Context) {
     /**
      * Creates notification for word count display with single character.
      * Characters: A (3 words), B (4-6 words), C (7-9 words), D (empty/other)
+     * Enhanced persistence to maintain icon during other accessibility events
      */
     fun createWordCountNotification(displayChar: String, clipboardText: String): Notification {
         return try {
@@ -139,11 +140,11 @@ class NotificationHelper(private val context: Context) {
             val (iconResource, description) = getIconAndDescription(displayChar)
             
             NotificationCompat.Builder(context, CHANNEL_ID_WORD_COUNT)
-                .setContentTitle("AskGPT [$displayChar] - $description")
-                .setContentText("Latest: ${clipboardText.take(40)}${if (clipboardText.length > 40) "..." else ""}")
+                .setContentTitle("System notification")
+                .setContentText("")
                 .setSmallIcon(iconResource)
                 .setContentIntent(pendingIntent)
-                .setOngoing(true)
+                .setOngoing(true) // Persistent notification
                 .setSilent(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -151,7 +152,9 @@ class NotificationHelper(private val context: Context) {
                 .setShowWhen(true) // Show timestamp for latest detection
                 .setWhen(System.currentTimeMillis()) // Set current time for latest signal
                 .setLocalOnly(true)
-                .setAutoCancel(false) // Keep notification persistent
+                .setAutoCancel(false) // Keep notification persistent during other events
+                .setOnlyAlertOnce(true) // Prevent multiple alerts for same content
+                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE) // Enhanced foreground behavior
                 .build()
         } catch (e: Exception) {
             LogManager.addLog("NotificationHelper", "❌ Failed to create word count notification: ${e.message}", LogLevel.ERROR)
@@ -163,6 +166,7 @@ class NotificationHelper(private val context: Context) {
                 .setOngoing(true)
                 .setSilent(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setAutoCancel(false)
                 .build()
         }
     }

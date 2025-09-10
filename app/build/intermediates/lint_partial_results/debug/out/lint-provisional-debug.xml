@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<incidents format="6" by="lint 8.1.4" type="conditional_incidents">
+
+    <incident
+        id="UnusedAttribute"
+        severity="warning"
+        message="">
+        <fix-data minSdk="ffffffffff800000" requiresApi="ffffffffc0000000"/>
+        <location
+            file="${:app*debug*sourceProvider*0*manifest*0}"
+            line="32"
+            column="9"
+            startOffset="1756"
+            endLine="32"
+            endColumn="65"
+            endOffset="1812"/>
+        <map>
+            <api-levels id="minSdk"
+                value="ffffffffff800000"/>
+            <api-levels id="requiresApi"
+                value="ffffffffc0000000"/>
+            <entry
+                name="message"
+                string="Attribute `dataExtractionRules` is only used in API level 31 and higher (current min is %1$s)"/>
+        </map>
+    </incident>
+
+    <incident
+        id="UnusedAttribute"
+        severity="warning"
+        message="">
+        <fix-data minSdk="ffffffffff800000" requiresApi="ffffffffe0000000"/>
+        <location
+            file="${:app*debug*sourceProvider*0*manifest*0}"
+            line="40"
+            column="9"
+            startOffset="2153"
+            endLine="40"
+            endColumn="54"
+            endOffset="2198"/>
+        <map>
+            <api-levels id="minSdk"
+                value="ffffffffff800000"/>
+            <api-levels id="requiresApi"
+                value="ffffffffe0000000"/>
+            <entry
+                name="message"
+                string="Attribute `preserveLegacyExternalStorage` is only used in API level 30 and higher (current min is %1$s)"/>
+        </map>
+    </incident>
+
+    <incident
+        id="BatteryLife"
+        severity="warning"
+        message="Use of `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` violates the Play Store Content Policy regarding acceptable use cases, as described in https://developer.android.com/training/monitoring-device-state/doze-standby.html">
+        <location
+            file="${:app*debug*sourceProvider*0*javaDir*0}/com/example/askgpt/MainActivity.kt"
+            line="123"
+            column="43"
+            startOffset="4698"
+            endLine="123"
+            endColumn="86"
+            endOffset="4741"/>
+        <map>
+            <condition targetGE="23"/>
+        </map>
+    </incident>
+
+    <incident
+        id="BatteryLife"
+        severity="warning"
+        message="Use of `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` violates the Play Store Content Policy regarding acceptable use cases, as described in https://developer.android.com/training/monitoring-device-state/doze-standby.html">
+        <location
+            file="${:app*debug*sourceProvider*0*javaDir*0}/com/example/askgpt/MainActivity.kt"
+            line="123"
+            column="43"
+            startOffset="4698"
+            endLine="123"
+            endColumn="86"
+            endOffset="4741"/>
+        <map>
+            <condition targetGE="23"/>
+        </map>
+    </incident>
+
+    <incident
+        id="NewApi"
+        severity="error"
+        message="">
+        <fix-data minSdk="ffffffffff800000" requiresApi="fffffffffe000000"/>
+        <location
+            file="${:app*debug*sourceProvider*0*javaDir*0}/com/example/askgpt/services/AskGPTAccessibilityService.kt"
+            line="27"
+            column="13"
+            startOffset="1147"
+            endLine="27"
+            endColumn="35"
+            endOffset="1169"/>
+        <map>
+            <api-levels id="minSdk"
+                value="ffffffffff800000"/>
+            <api-levels id="requiresApi"
+                value="fffffffffe000000"/>
+            <entry
+                name="message"
+                string="Call requires API level 26 (current min is %1$s): `android.content.ContextWrapper#startForegroundService`"/>
+        </map>
+    </incident>
+
+    <incident
+        id="NotificationPermission"
+        severity="error"
+        message="When targeting Android 13 or higher, posting a permission requires holding the `POST_NOTIFICATIONS` permission">
+        <fix-data missing="android.permission.POST_NOTIFICATIONS"/>
+        <location
+            file="${:app*debug*sourceProvider*0*javaDir*0}/com/example/askgpt/utils/NotificationHelper.kt"
+            line="215"
+            column="13"
+            startOffset="9963"
+            endLine="215"
+            endColumn="62"
+            endOffset="10012"/>
+    </incident>
+
+</incidents>
