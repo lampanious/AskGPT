@@ -1,23 +1,23 @@
 package com.example.askgpt
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityManager
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,6 +26,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -33,19 +34,19 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.askgpt.data.SelectedTextItem
+import kotlinx.coroutines.*
+import com.example.askgpt.config.ChatGPTConfig
 import com.example.askgpt.data.SelectedTextManager
-import com.example.askgpt.data.ClipboardHistoryManager
-import com.example.askgpt.data.ClipboardHistoryEntry
+import com.example.askgpt.data.ChatGPTHistoryManager
+import com.example.askgpt.data.ChatGPTEntry
 import com.example.askgpt.services.ClipboardMonitoringService
+import com.example.askgpt.services.OverlayButtonService
 import com.example.askgpt.ui.theme.AskGPTTheme
 import com.example.askgpt.utils.LogManager
 import com.example.askgpt.utils.LogLevel
-import java.io.File
-import java.io.FileWriter
+import com.example.askgpt.utils.GlobalClipboardManager
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -72,40 +73,22 @@ class MainActivity : ComponentActivity() {
         
         try {
             enableEdgeToEdge()
-            
-            // Request notification permission for Android 13+
+            GlobalClipboardManager.initialize(this)
             requestNotificationPermission()
             
-            // Log app startup with crash protection
-            try {
-                LogManager.addLog("MainActivity", "App started successfully", LogLevel.INFO)
-            } catch (e: Exception) {
-                e.printStackTrace() // Don't let logging crash the app
-            }
-            
-            // Handle intent from notification safely
-            try {
-                handleIncomingIntent(intent)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            LogManager.addLog("MainActivity", "App started successfully", LogLevel.INFO)
+            handleIncomingIntent(intent)
             
             setContent {
                 AskGPTTheme {
-                    // Use a safe composable that handles errors gracefully
                     SafeMainScreen()
                 }
             }
             
-            // Start clipboard service after UI is initialized to prevent black screen
-            try {
-                (application as? AskGPTApplication)?.startClipboardServiceSafely()
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Failed to start clipboard service after UI init", e)
-            }
+            // Start clipboard service after UI initialization
+            (application as? AskGPTApplication)?.startClipboardServiceSafely()
         } catch (e: Exception) {
-            // Emergency error handling - show basic error screen
-            e.printStackTrace()
+            Log.e("MainActivity", "App startup failed", e)
             setContent {
                 AskGPTTheme {
                     ErrorScreen("App startup failed: ${e.message}")
@@ -156,26 +139,44 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         
-        // Export clipboard history before app is destroyed
+        // Export ChatGPT history for backup
         try {
-            val exportPath = ClipboardHistoryManager.exportToFile(this)
+            val exportPath = ChatGPTHistoryManager.exportToFile(this)
             if (exportPath != null) {
-                LogManager.addLog("MainActivity", "📄 Clipboard history exported to: $exportPath", LogLevel.SUCCESS)
-            } else {
-                LogManager.addLog("MainActivity", "❌ Failed to export clipboard history", LogLevel.ERROR)
+                LogManager.addLog("MainActivity", "History exported to: $exportPath", LogLevel.SUCCESS)
             }
         } catch (e: Exception) {
-            LogManager.addLog("MainActivity", "❌ Error exporting clipboard history: ${e.message}", LogLevel.ERROR)
+            LogManager.addLog("MainActivity", "Failed to export history: ${e.message}", LogLevel.ERROR)
         }
         
-        // Stop continuous clipboard service when app is destroyed
+        // Stop clipboard service
         try {
             val intent = Intent(this, ClipboardMonitoringService::class.java)
             stopService(intent)
-            LogManager.addLog("MainActivity", "🛑 App destroyed - stopped continuous clipboard service", LogLevel.INFO)
+            LogManager.addLog("MainActivity", "Clipboard service stopped", LogLevel.INFO)
         } catch (e: Exception) {
-            LogManager.addLog("MainActivity", "Error stopping continuous service on app destroy: ${e.message}", LogLevel.ERROR)
+            LogManager.addLog("MainActivity", "Error stopping service: ${e.message}", LogLevel.ERROR)
         }
+    }
+    
+    override fun onResume() {
+        super.onResume()
+        
+        // Sync clipboard when app resumes
+        try {
+            val refreshedText = GlobalClipboardManager.refreshClipboardNow()
+            if (refreshedText != null) {
+                GlobalClipboardManager.forceSyncFromSystem()
+                LogManager.addLog("MainActivity", "Clipboard synced: ${refreshedText.take(30)}...", LogLevel.DEBUG)
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("MainActivity", "Clipboard sync failed: ${e.message}", LogLevel.ERROR)
+        }
+    }
+    
+    override fun onPause() {
+        super.onPause()
+        LogManager.addLog("MainActivity", "App paused", LogLevel.DEBUG)
     }
     
     override fun onNewIntent(intent: Intent?) {
@@ -187,12 +188,93 @@ class MainActivity : ComponentActivity() {
         }
     }
     
+    // Store dark transition state globally
+    internal var isDarkTransition = false
+    
+    // Background theme state (default: light)
+    internal var isDarkBackground = false
+    
     private fun handleIncomingIntent(intent: Intent?) {
         try {
+            // Handle dark transition mode
+            isDarkTransition = intent?.getBooleanExtra("DARK_TRANSITION", false) ?: false
+            if (isDarkTransition) {
+                LogManager.addLog("MainActivity", "🌑 Dark transition mode activated", LogLevel.INFO)
+            }
+            
+            // Handle selected text from other apps
             intent?.getStringExtra("selected_text")?.let { text ->
                 SelectedTextManager.addSelectedText(text)
             }
+            
+            // Handle float button restart
+            val triggeredByFloatButton = intent?.getBooleanExtra("TRIGGERED_BY_FLOAT_BUTTON", false) ?: false
+            val autoProcessClipboard = intent?.getBooleanExtra("AUTO_PROCESS_CLIPBOARD", false) ?: false
+            
+            if (triggeredByFloatButton && autoProcessClipboard) {
+                LogManager.addLog("MainActivity", "🔄 App restarted by float button - auto-processing clipboard", LogLevel.SUCCESS)
+                
+                // Use a coroutine to handle the clipboard processing with proper delays
+                CoroutineScope(Dispatchers.Main).launch {
+                    try {
+                        // Small delay to ensure app is fully loaded
+                        delay(500)
+                        
+                        // Fresh clipboard sync
+                        LogManager.addLog("MainActivity", "📋 Syncing clipboard after app restart", LogLevel.INFO)
+                        val freshClipboard = GlobalClipboardManager.refreshClipboardNow()
+                        
+                        if (!freshClipboard.isNullOrBlank()) {
+                            LogManager.addLog("MainActivity", "✅ Fresh clipboard content found: ${freshClipboard.take(50)}...", LogLevel.SUCCESS)
+                            
+                            // Trigger clipboard processing automatically
+                            val serviceIntent = Intent(this@MainActivity, ClipboardMonitoringService::class.java).apply {
+                                action = ClipboardMonitoringService.ACTION_TEST_CLIPBOARD
+                            }
+                            startForegroundService(serviceIntent)
+                            
+                            // Log success instead of toast
+                            LogManager.addLog("MainActivity", "🚀 Auto-processing fresh clipboard content", LogLevel.INFO)
+                            
+                            LogManager.addLog("MainActivity", "🚀 Auto-processing initiated after restart", LogLevel.SUCCESS)
+                        } else {
+                            LogManager.addLog("MainActivity", "⚠️ No clipboard content found after restart", LogLevel.WARN)
+                            LogManager.addLog("MainActivity", "⚠️ No clipboard content to process", LogLevel.WARN)
+                        }
+                        
+                    } catch (e: Exception) {
+                        LogManager.addLog("MainActivity", "❌ Error in auto-processing after restart: ${e.message}", LogLevel.ERROR)
+                        LogManager.addLog("MainActivity", "❌ Error processing clipboard", LogLevel.ERROR)
+                    }
+                }
+            }
+            
+            // Handle auto-launch after successful processing
+            val autoLaunchedAfterSuccess = intent?.getBooleanExtra("AUTO_LAUNCHED_AFTER_SUCCESS", false) ?: false
+            val showResultTab = intent?.getBooleanExtra("SHOW_RESULT_TAB", false) ?: false
+            
+            if (autoLaunchedAfterSuccess && showResultTab) {
+                val lastQuestion = intent?.getStringExtra("LAST_QUESTION")
+                val lastResponse = intent?.getStringExtra("LAST_RESPONSE") 
+                val wasForced = intent?.getBooleanExtra("PROCESSING_WAS_FORCED", false) ?: false
+                
+                LogManager.addLog("MainActivity", "📱 App auto-launched after successful processing", LogLevel.SUCCESS)
+                
+                if (lastQuestion != null && lastResponse != null) {
+                    LogManager.addLog("MainActivity", "📋 Showing result: Q: ${lastQuestion.take(30)}... A: ${lastResponse.take(30)}...", LogLevel.INFO)
+                    
+                    // Log success with processing info instead of toast
+                    val processingType = if (wasForced) "Float Button" else "Auto Detection"
+                    LogManager.addLog("MainActivity", "✅ $processingType processing completed!", LogLevel.SUCCESS)
+                    
+                    // TODO: Here you can add logic to switch to specific tab or show the result
+                    // For example, switch to history tab to show the latest entry
+                    LogManager.addLog("MainActivity", "💡 Future: Could switch to history tab or highlight latest entry", LogLevel.DEBUG)
+                }
+            }
+            
         } catch (e: Exception) {
+            LogManager.addLog("MainActivity", "❌ Error handling incoming intent: ${e.message}", LogLevel.ERROR)
             e.printStackTrace()
         }
     }
@@ -229,12 +311,18 @@ fun ErrorScreen(errorMessage: String) {
 
 @Composable
 fun SafeMainScreen() {
+    val context = LocalContext.current
     var appState by remember { mutableStateOf<AppState>(AppState.Loading) }
+    
+    // Cache dark transition mode check to avoid repeated casts
+    val isDarkTransitionMode = remember {
+        (context as? MainActivity)?.isDarkTransition ?: false
+    }
     
     LaunchedEffect(Unit) {
         try {
-            // Initialize app components safely
-            kotlinx.coroutines.delay(100) // Brief delay to ensure initialization
+            // Faster initialization - reduce delay
+            kotlinx.coroutines.delay(50) // Reduced from 100ms to 50ms
             appState = AppState.Normal
         } catch (e: Exception) {
             Log.e("SafeMainScreen", "Error during initialization", e)
@@ -242,27 +330,50 @@ fun SafeMainScreen() {
         }
     }
     
-    when (appState) {
-        is AppState.Loading -> {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
+    // Use conditional rendering instead of Box overlay for better performance
+    if (isDarkTransitionMode) {
+        DarkTransitionOverlay()
+    } else {
+        when (appState) {
+            is AppState.Loading -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
                 ) {
-                    CircularProgressIndicator()
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Starting AskGPT...")
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Starting AskGPT...")
+                    }
                 }
             }
+            is AppState.Normal -> {
+                MainScreen()
+            }
+            is AppState.Error -> {
+                ErrorScreen((appState as AppState.Error).message)
+            }
         }
-        is AppState.Normal -> {
-            MainScreen()
-        }
-        is AppState.Error -> {
-            ErrorScreen((appState as AppState.Error).message)
-        }
+    }
+}
+
+@Composable
+fun DarkTransitionOverlay() {
+    // Optimized dark overlay - minimal composable footprint
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        // Very minimal progress indicator - no complex animations
+        CircularProgressIndicator(
+            modifier = Modifier.size(20.dp),
+            color = Color(0xFF444444), // Dark gray instead of bright color
+            strokeWidth = 1.5.dp
+        )
     }
 }
 
@@ -271,22 +382,34 @@ fun SafeMainScreen() {
 fun MainScreen() {
     val context = LocalContext.current
     
-    // Safe state collection with error protection
-    val selectedTexts by SelectedTextManager.selectedTexts.collectAsStateWithLifecycle()
-    
-    val latestText = remember(selectedTexts) { 
-        try {
-            if (selectedTexts.isNotEmpty()) selectedTexts.first().text else "Clipboard monitoring starting..."
-        } catch (e: Exception) {
-            "Clipboard monitoring initializing..."
-        }
-    }
-    
     var isClipboardServiceRunning by remember { mutableStateOf(false) }
+    var hasOverlayPermission by remember { mutableStateOf(false) }
     
     // Safe service initialization with error protection
     LaunchedEffect(Unit) {
         try {
+            // Check overlay permission
+            hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else {
+                true // No overlay permission needed on older versions
+            }
+            
+            // Start overlay service if permission is granted
+            if (hasOverlayPermission) {
+                try {
+                    val overlayIntent = Intent(context, OverlayButtonService::class.java).apply {
+                        action = OverlayButtonService.ACTION_START_OVERLAY
+                    }
+                    context.startService(overlayIntent)
+                    LogManager.addLog("MainActivity", "🎯 Overlay button service started", LogLevel.SUCCESS)
+                } catch (e: Exception) {
+                    LogManager.addLog("MainActivity", "❌ Failed to start overlay service: ${e.message}", LogLevel.ERROR)
+                }
+            } else {
+                LogManager.addLog("MainActivity", "⚠️ Overlay permission not granted", LogLevel.WARN)
+            }
+            
             // Safely check battery optimization status
             try {
                 val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -363,26 +486,90 @@ fun MainScreen() {
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("AskGPT - Clipboard Monitor") }
-            )
-        }
+        // No top bar - removed app title
     ) { innerPadding ->
-        Column(
+        // Get background color based on theme
+        val backgroundColor = if ((context as? MainActivity)?.isDarkBackground == true) {
+            Color.Black
+        } else {
+            Color.White
+        }
+        
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .background(backgroundColor) // Apply background color
+                .padding(innerPadding) // Remove extra padding for full screen
         ) {
-            // Unified Service Status Panel
-            UnifiedServiceStatusCard(
-                isClipboardServiceRunning = isClipboardServiceRunning
-            )
-            
-            // Comprehensive Clipboard History Section
-            ClipboardHistoryCard()
+            // Main content
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(0.dp) // Remove spacing for full screen
+            ) {
+                // Check all system statuses
+                val localContext = LocalContext.current
+                var hasAccessibilityPermission by remember { mutableStateOf(false) }
+                
+                LaunchedEffect(Unit) {
+                    hasAccessibilityPermission = isAccessibilityServiceEnabled(localContext)
+                }
+                
+                // Check if all systems are active
+                val allSystemsActive = hasOverlayPermission && isClipboardServiceRunning && hasAccessibilityPermission
+                
+                // Only show status panel if not all systems are active
+                if (!allSystemsActive) {
+                    // Overlay Permission Status
+                    if (!hasOverlayPermission) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "🎯 Overlay Permission Required",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Text(
+                                    text = "The floating overlay button needs permission to appear on top of other apps.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Button(
+                                    onClick = {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                                                data = android.net.Uri.parse("package:${localContext.packageName}")
+                                            }
+                                            localContext.startActivity(intent)
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error
+                                    )
+                                ) {
+                                    Text("Grant Permission", color = MaterialTheme.colorScheme.onError)
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Unified Service Status Panel (only when not all active)
+                    UnifiedServiceStatusCard(
+                        isClipboardServiceRunning = isClipboardServiceRunning
+                    )
+                }
+                
+                // ChatGPT Question/Answer History Section (always visible)
+                ChatGPTHistoryCard()
+            }
         }
     }
 }
@@ -686,21 +873,8 @@ fun ServiceStatusRow(
     }
 }
 
-// Helper function to check if a service is running
-private fun isServiceRunning(context: Context, serviceClassName: String): Boolean {
-    return try {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-        val services = activityManager.getRunningServices(Integer.MAX_VALUE)
-        services.any { it.service.className == serviceClassName }
-    } catch (e: Exception) {
-        LogManager.addLog("MainActivity", "❌ Error checking service status for $serviceClassName: ${e.message}", LogLevel.ERROR)
-        false
-    }
-}
-
 private fun isAccessibilityServiceEnabled(context: Context): Boolean {
     return try {
-        val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
         val enabledServices = Settings.Secure.getString(
             context.contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
@@ -713,128 +887,51 @@ private fun isAccessibilityServiceEnabled(context: Context): Boolean {
 }
 
 @Composable
-fun ClipboardHistoryCard() {
-    val context = LocalContext.current
-    val historyEntries = ClipboardHistoryManager.getHistory()
+fun ChatGPTHistoryCard() {
+    val historyEntries by ChatGPTHistoryManager.chatGPTHistory.collectAsStateWithLifecycle()
     val dateFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    val context = LocalContext.current
+    val isDarkTheme = (context as? MainActivity)?.isDarkBackground ?: false
     
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+    // Display only the data records without header or title
+    if (historyEntries.isNotEmpty()) {
+        // History entries in a full screen scrollable list
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize(), // Use full screen height
+            verticalArrangement = Arrangement.spacedBy(2.dp), // Reduced spacing for more data
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp) // Minimal padding
         ) {
-            // Header with export action
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "📋 Clipboard History (${historyEntries.size} entries)",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
+            items(historyEntries) { entry ->
+                ChatGPTHistoryRow(
+                    entry = entry,
+                    dateFormat = dateFormat
                 )
-                
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Export button
-                    Button(
-                        onClick = {
-                            val exportPath = ClipboardHistoryManager.exportToFile(context)
-                            if (exportPath != null) {
-                                Toast.makeText(context, "History exported to: ${File(exportPath).name}", Toast.LENGTH_LONG).show()
-                            } else {
-                                Toast.makeText(context, "Export failed", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.secondary
-                        ),
-                        modifier = Modifier.size(width = 80.dp, height = 32.dp)
-                    ) {
-                        Text("Export", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSecondary)
-                    }
-                }
             }
-            
-            // Table header
-            if (historyEntries.isNotEmpty()) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text(
-                            text = "Time",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(0.25f),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Text(
-                            text = "Content",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(0.75f),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
-                }
-                
-                // History entries in a scrollable list
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 400.dp), // Limit height with scroll
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(historyEntries) { entry ->
-                        ClipboardHistoryRow(
-                            entry = entry,
-                            dateFormat = dateFormat
-                        )
-                    }
-                }
-            } else {
-                // Empty state
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    )
-                ) {
-                    Text(
-                        text = "📝 No clipboard history yet. Start copying text to see entries here.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        modifier = Modifier
-                            .padding(16.dp)
-                            .fillMaxWidth(),
-                        textAlign = TextAlign.Center,
-                        fontStyle = FontStyle.Italic
-                    )
-                }
-            }
-            
-            // Information footer
+        }
+    } else {
+        // Empty state - minimal with adaptive colors
+        val textColor = if (isDarkTheme) Color.White else Color.Black
+        val borderColor = if (isDarkTheme) Color.White.copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.3f)
+        
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = Color.Transparent
+            ),
+            border = BorderStroke(
+                width = 1.dp,
+                color = borderColor
+            )
+        ) {
             Text(
-                text = "💡 Unique clipboard entries are recorded with timestamps. Duplicate consecutive content is not saved. History is automatically exported when app closes.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                text = "No data yet",
+                style = MaterialTheme.typography.bodyMedium,
+                color = textColor.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .padding(16.dp)
+                    .fillMaxWidth(),
+                textAlign = TextAlign.Center,
                 fontStyle = FontStyle.Italic
             )
         }
@@ -842,41 +939,137 @@ fun ClipboardHistoryCard() {
 }
 
 @Composable
-fun ClipboardHistoryRow(
-    entry: ClipboardHistoryEntry,
+fun ChatGPTHistoryRow(
+    entry: ChatGPTEntry,
     dateFormat: SimpleDateFormat
 ) {
+    val context = LocalContext.current
+    val isDarkTheme = (context as? MainActivity)?.isDarkBackground ?: false
+    
+    // Adaptive colors based on background
+    val textColor = if (isDarkTheme) Color.White else Color.Black
+    val borderColor = if (isDarkTheme) Color.White.copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.3f)
+    
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = Color.Transparent // Transparent background
+        ),
+        border = BorderStroke(
+            width = 1.dp,
+            color = borderColor
         )
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(4.dp), // Reduced padding for more compact display
+            horizontalArrangement = Arrangement.spacedBy(6.dp), // Reduced spacing
             verticalAlignment = Alignment.Top
         ) {
             // Timestamp
             Text(
                 text = dateFormat.format(Date(entry.timestamp)),
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(0.25f),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                modifier = Modifier.weight(0.2f),
+                color = textColor.copy(alpha = 0.8f),
                 fontWeight = FontWeight.Medium
             )
             
-            // Content preview
+            // Question preview
             Text(
-                text = entry.content.take(200) + if (entry.content.length > 200) "..." else "",
+                text = entry.question.take(100) + if (entry.question.length > 100) "..." else "",
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(0.75f),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 3,
+                modifier = Modifier.weight(0.4f),
+                color = textColor,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+            
+            // Answer preview
+            Text(
+                text = entry.answer.take(80) + if (entry.answer.length > 80) "..." else "",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(0.3f),
+                color = if (isDarkTheme) Color.Cyan else Color.Blue,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium
+            )
+            
+            // Response time
+            Text(
+                text = "${entry.responseTime}ms",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(0.1f),
+                color = textColor.copy(alpha = 0.6f),
+                fontSize = 10.sp
+            )
+        }
+    }
+}
+
+@Composable
+fun ChatGPTConfigCard() {
+    val isConfigured = ChatGPTConfig.isApiKeyConfigured()
+    
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isConfigured) 
+                MaterialTheme.colorScheme.primaryContainer 
+            else 
+                MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = if (isConfigured) "🤖" else "⚠️",
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Text(
+                    text = "ChatGPT Integration",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isConfigured) 
+                        MaterialTheme.colorScheme.onPrimaryContainer 
+                    else 
+                        MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+            
+            if (isConfigured) {
+                Text(
+                    text = "✅ API key configured - Multiple choice questions will be answered by ChatGPT",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    text = "Icons A, B, C, D now represent ChatGPT answers for multiple choice questions",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                    fontStyle = FontStyle.Italic
+                )
+            } else {
+                Text(
+                    text = "❌ No API key configured - Using fallback word count analysis",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+                Text(
+                    text = "To enable ChatGPT:\n1. Edit ChatGPTConfig.kt\n2. Add your OpenAI API key\n3. Rebuild the app",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
+                    fontStyle = FontStyle.Italic
+                )
+            }
         }
     }
 }

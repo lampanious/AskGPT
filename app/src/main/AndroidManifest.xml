@@ -3,6 +3,8 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Essential permissions for clipboard monitoring and notifications -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -70,6 +72,13 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Clipboard monitoring for instant text detection" />
         </service>
+        
+        <!-- Floating Overlay Button Service -->
+        <service
+            android:name=".services.OverlayButtonService"
+            android:enabled="true"
+            android:exported="false"
+            android:stopWithTask="false" />
         
         <!-- Service Watchdog for persistent background operation -->
         <service

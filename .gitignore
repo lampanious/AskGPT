@@ -111,3 +111,4 @@ $RECYCLE.BIN/
 # Project specific
 app/release/
 app/debug/
+app/build/

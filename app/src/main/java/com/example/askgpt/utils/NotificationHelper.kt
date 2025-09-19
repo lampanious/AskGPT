@@ -8,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
+import com.example.askgpt.R
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -108,24 +110,30 @@ class NotificationHelper(private val context: Context) {
     
     /**
      * Get icon and description based on display character
+     * Updated for ChatGPT multiple choice answers
      */
     private fun getIconAndDescription(displayChar: String): Pair<Int, String> {
         return when (displayChar) {
-            "A" -> Pair(android.R.drawable.ic_dialog_alert, "Exactly 3 words")
-            "B" -> Pair(android.R.drawable.ic_dialog_info, "4-6 words") 
-            "C" -> Pair(android.R.drawable.ic_menu_close_clear_cancel, "7-9 words")
-            "D" -> Pair(android.R.drawable.ic_delete, "Empty/Other count")
-            "🔄" -> Pair(android.R.drawable.ic_popup_sync, "Starting...")
-            else -> Pair(android.R.drawable.ic_menu_info_details, "Unknown status")
+            "A" -> Pair(android.R.drawable.ic_dialog_alert, "Answer: A")
+            "B" -> Pair(android.R.drawable.ic_lock_idle_low_battery, "Answer: B") 
+            "C" -> Pair(android.R.drawable.ic_menu_camera, "Answer: C")
+            "D" -> Pair(android.R.drawable.ic_menu_delete, "Answer: D")
+            "E" -> Pair(android.R.drawable.ic_menu_edit, "Answer: E")
+            "F" -> Pair(android.R.drawable.ic_menu_more, "Answer: F")
+            "Ready" -> Pair(android.R.drawable.ic_menu_info_details, "Ready")
+            "?" -> Pair(android.R.drawable.ic_dialog_dialer, "API Error")
+            "⏳" -> Pair(android.R.drawable.ic_menu_rotate, "Processing...")
+            "Unknown" -> Pair(android.R.drawable.ic_menu_more, "Unknown")
+            else -> Pair(android.R.drawable.ic_menu_more, displayChar)
         }
     }
 
     /**
-     * Creates notification for word count display with single character.
-     * Characters: A (3 words), B (4-6 words), C (7-9 words), D (empty/other)
+     * Creates notification for ChatGPT answer display with single character.
+     * Characters: A, B, C, D, E, F (multiple choice answers)
      * Enhanced persistence to maintain icon during other accessibility events
      */
-    fun createWordCountNotification(displayChar: String, clipboardText: String): Notification {
+    fun createChatGPTNotification(displayChar: String, message: String): Notification {
         return try {
             val intent = Intent().apply {
                 setClassName(context, "com.example.askgpt.MainActivity")
@@ -138,6 +146,47 @@ class NotificationHelper(private val context: Context) {
             
             // Get appropriate icon and description for the character
             val (iconResource, description) = getIconAndDescription(displayChar)
+            
+            NotificationCompat.Builder(context, CHANNEL_ID_WORD_COUNT)
+                .setContentTitle(displayChar) // Only show the response character
+                .setSmallIcon(iconResource)
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setAutoCancel(false)
+                .build()
+        } catch (e: Exception) {
+            Log.e("NotificationHelper", "Error creating ChatGPT notification", e)
+            // Return a simple fallback notification
+            NotificationCompat.Builder(context, CHANNEL_ID_WORD_COUNT)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("ChatGPT Error")
+                .setContentText("Failed to create notification")
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build()
+        }
+    }
+
+    /**
+     * Creates notification for ChatGPT answer display with single character.
+     * Characters: A, B, C, D, E, F (multiple choice answers)
+     * Enhanced persistence to maintain icon during other accessibility events
+     */
+    fun createWordCountNotification(displayChar: String): Notification {
+        return try {
+            val intent = Intent().apply {
+                setClassName(context, "com.example.askgpt.MainActivity")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context, 0, intent, 
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Get appropriate icon for the character
+            val (iconResource, _) = getIconAndDescription(displayChar)
             
             NotificationCompat.Builder(context, CHANNEL_ID_WORD_COUNT)
                 .setContentTitle("System notification")
@@ -203,6 +252,21 @@ class NotificationHelper(private val context: Context) {
                 .setSmallIcon(android.R.drawable.ic_menu_info_details)
                 .build()
         }
+    }
+    
+    /**
+     * Create a processing notification with progress
+     */
+    fun createProcessingNotification(status: String, progress: Int): Notification {
+        return NotificationCompat.Builder(context, CHANNEL_ID_WORD_COUNT)
+            .setContentTitle("ChatGPT Processing")
+            .setContentText(status)
+            .setSmallIcon(android.R.drawable.ic_popup_sync)
+            .setProgress(100, progress, false)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(false)
+            .build()
     }
     
     /**

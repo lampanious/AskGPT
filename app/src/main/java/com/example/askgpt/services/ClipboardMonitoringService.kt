@@ -8,968 +8,880 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
-import com.example.askgpt.data.SelectedTextManager
-import com.example.askgpt.data.ClipboardHistoryManager
+import com.example.askgpt.api.ChatGPTApi
+import com.example.askgpt.data.ChatGPTHistoryManager
 import com.example.askgpt.utils.LogManager
 import com.example.askgpt.utils.LogLevel
 import com.example.askgpt.utils.NotificationHelper
+import com.example.askgpt.utils.GlobalClipboardManager
+import com.example.askgpt.utils.RealTimeNotificationManager
 import kotlinx.coroutines.*
+import java.util.Timer
+import java.util.TimerTask
 
 /**
- * CONTINUOUS CLIPBOARD MONITORING SERVICE - Resource Optimized
+ * CHATGPT CLIPBOARD MONITORING SERVICE
  * 
- * This service monitors clipboard changes continuously while the app is running.
- * Uses ClipboardManager.OnPrimaryClipChangedListener for immediate, resource-efficient detection.
- * 
- * RESOURCE USAGE OPTIMIZATION:
- * 
- * 1. CPU EFFICIENCY:
- *    - Event-driven clipboard detection (0% CPU when clipboard unchanged)
- *    - Adaptive polling intervals: 100ms active → 300ms normal → 1000ms idle
- *    - Background coroutine processing (non-blocking)
- *    - Smart duplicate detection prevents unnecessary work
- * 
- * 2. MEMORY MANAGEMENT:
- *    - Single clipboard listener instance (no memory leaks)
- *    - Text length limits (5KB max) prevent memory bloat
- *    - Automatic cleanup of temporary storage
- *    - In-memory history with bounded size
- * 
- * 3. BATTERY OPTIMIZATION:
- *    - PARTIAL_WAKE_LOCK (CPU only, not screen/GPS)
- *    - Auto-release wake lock after 60 minutes
- *    - Progressive interval scaling reduces background activity
- *    - Minimal network/I/O operations
- * 
- * 4. SYSTEM INTEGRATION:
- *    - Foreground service with persistent notification
- *    - Automatic restart on system kills (START_STICKY)
- *    - Graceful degradation on permission loss
- *    - Clean resource release on destroy
+ * This service monitors clipboard changes and automatically processes them with ChatGPT.
+ * - Detects clipboard changes instantly
+ * - Processes all text with ChatGPT (no word counting fallback)
+ * - Stores question/answer history
+ * - Shows real-time responses in notifications
  */
 class ClipboardMonitoringService : Service() {
     
-    private val TAG = "ClipboardService"
+    private val TAG = "ChatGPTService"
     private var clipboardManager: ClipboardManager? = null
     private var lastClipboardText: String? = null
     private lateinit var notificationHelper: NotificationHelper
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    
+    // ChatGPT API client
+    private val chatGPTApi = ChatGPTApi()
+    
+    // Performance optimization
+    private var isProcessing = false
+    private val MIN_QUESTION_LENGTH = 10
+    private val MAX_TEXT_LENGTH = 5000
+    
+    // Enhanced background operation
     private var wakeLock: PowerManager.WakeLock? = null
+    private var clipboardTimer: Timer? = null
+    private val CLIPBOARD_CHECK_INTERVAL = 1500L // Check every 1.5 seconds for better responsiveness
     
-    // Temporary storage for latest clipboard detection
-    private var latestClipboardText: String? = null
-    private var latestDisplayChar: String = "🔄"
-    private var latestDetectionTime: Long = 0L
+    // Service persistence flags
+    private var isServiceRunning = false
+    private var backgroundModeEnabled = true
+    private var shouldReturnToChrome = false
     
-    // Enhanced proactive temporary storage for immediate clipboard detection
-    private var temporaryClipboardStorage: String? = null
-    private var previousTemporaryStorage: String? = null
-    private var lastStorageUpdateTime: Long = 0L
-    private var contentChangeCounter: Int = 0
-    
-    // Ultra-responsive detection variables  
-    private var currentCheckInterval: Long = ULTRA_FAST_CHECK_INTERVAL
-    private var lastContentHash: String? = null
-    private var consecutiveNoChanges: Int = 0
-    private var isProactiveMode: Boolean = true
-    
-    // Use coroutines for background processing
-    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var clipboardCheckJob: Job? = null
-    
-    // Enhanced clipboard listener for cross-app monitoring with REAL-TIME CONTENT LOGGING
-    private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
-        // IMMEDIATE detection and logging when copying from external apps
-        serviceScope.launch(Dispatchers.Main) {
-            try {
-                val detectionTime = System.currentTimeMillis()
-                Log.d(TAG, "🚀 EXTERNAL APP COPY DETECTED - FETCHING CONTENT...")
-                
-                // Add small delay to ensure clipboard data is fully available from external app
-                delay(50) // 50ms for cross-app stability
-                
-                // IMMEDIATELY fetch and display the copied content
-                val clipData = clipboardManager?.primaryClip
-                if (clipData != null && clipData.itemCount > 0) {
-                    val copiedText = clipData.getItemAt(0).text?.toString()
-                    
-                    if (!copiedText.isNullOrEmpty()) {
-                        // DETECT LIKELY SOURCE APP
-                        val sourceApp = guessSourceApp(copiedText)
-                        
-                        // LOG THE ACTUAL COPIED CONTENT IMMEDIATELY
-                        val preview = if (copiedText.length > 100) {
-                            copiedText.take(100) + "..."
-                        } else {
-                            copiedText
-                        }
-                        
-                        Log.d(TAG, "📋 COPIED FROM $sourceApp: \"$preview\"")
-                        LogManager.addLog(TAG, "� $sourceApp: \"$preview\"", LogLevel.SUCCESS)
-                        
-                        // Show detailed content info
-                        val wordCount = copiedText.trim().split("\\s+".toRegex()).size
-                        val charCount = copiedText.length
-                        val lineCount = copiedText.split("\n").size
-                        
-                        Log.d(TAG, "📊 Content Details: $wordCount words, $charCount chars, $lineCount lines")
-                        LogManager.addLog(TAG, "📊 Details: $wordCount words, $charCount chars", LogLevel.INFO)
-                        
-                        // Process the content normally
-                        val processResult = proactiveClipboardFetch()
-                        if (processResult) {
-                            Log.d(TAG, "✅ External app content processed successfully")
-                            LogManager.addLog(TAG, "✅ PROCESSED: Content from external app saved", LogLevel.SUCCESS)
-                        }
-                    } else {
-                        Log.d(TAG, "⚠️ External app copied empty/null content")
-                        LogManager.addLog(TAG, "⚠️ EMPTY: External app copied empty content", LogLevel.WARN)
-                    }
-                } else {
-                    Log.d(TAG, "❌ Could not access clipboard data from external app")
-                    LogManager.addLog(TAG, "❌ ACCESS FAILED: Cannot read external app clipboard", LogLevel.ERROR)
-                    
-                    // Fallback mechanism for cross-app reliability
-                    delay(100)
-                    val fallbackResult = proactiveClipboardFetch()
-                    if (fallbackResult) {
-                        LogManager.addLog(TAG, "🔄 FALLBACK: Retrieved content after delay", LogLevel.INFO)
-                    }
-                }
-                
-                LogManager.addLog(TAG, "⚡ COPY EVENT: Detected from external app", LogLevel.INFO)
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Error processing external app clipboard copy", e)
-                LogManager.addLog(TAG, "❌ COPY ERROR: ${e.message}", LogLevel.ERROR)
-            }
-        }
-    }
+    // Duplicate detection
+    private var lastProcessedClipboardContent: String? = null
     
     companion object {
-        // RESOURCE-OPTIMIZED INTERVALS for continuous operation
-        private const val ULTRA_FAST_CHECK_INTERVAL = 100L // 100ms - immediate response to changes
-        private const val CLIPBOARD_CHECK_INTERVAL = 300L // 300ms - normal monitoring  
-        private const val FAST_CHECK_INTERVAL = 150L // 150ms - quick response mode
-        private const val SLOW_CHECK_INTERVAL = 1000L // 1s - battery saving mode
-        private const val MAX_TEXT_LENGTH = 5000 // Limit text length for memory efficiency
-        private const val NOTIFICATION_ID = 1002
-        
-        // RESOURCE MANAGEMENT CONSTANTS
-        private const val MIN_CONTENT_CHANGE_LENGTH = 1 // Minimal change detection
-        private const val CONTENT_SIMILARITY_THRESHOLD = 0.95 // Duplicate prevention threshold
-        private const val WAKE_LOCK_TIMEOUT = 60 * 60 * 1000L // 60 minutes auto-release
-        private const val HEALTH_CHECK_INTERVAL = 30000L // 30 seconds health monitoring
-        private const val MAX_CONSECUTIVE_ERRORS = 5 // Error tolerance before recovery
-        
-        // PERFORMANCE OPTIMIZATION THRESHOLDS
-        private const val FAST_MODE_THRESHOLD = 15 // Switch to fast mode after 15 idle checks
-        private const val NORMAL_MODE_THRESHOLD = 40 // Switch to normal after 40 idle checks  
-        private const val SLOW_MODE_THRESHOLD = 80 // Switch to power saving after 80 idle checks
-
-        /**
-         * Get a user-friendly name for the app that likely copied the content
-         * Based on clipboard content patterns and timing
-         */
-        fun guessSourceApp(content: String): String {
-            return when {
-                content.startsWith("http") && content.contains("wa.me") -> "📱 WhatsApp"
-                content.startsWith("http") && content.contains("youtube") -> "📺 YouTube"
-                content.startsWith("http") && content.contains("twitter") -> "🐦 Twitter"
-                content.startsWith("http") && content.contains("instagram") -> "📷 Instagram"
-                content.startsWith("http") && content.contains("facebook") -> "👤 Facebook"
-                content.startsWith("http") && content.contains("google") -> "🔍 Google"
-                content.startsWith("http") && content.contains("github") -> "💻 GitHub"
-                content.startsWith("http") -> "🌐 Browser"
-                content.contains("@") && content.contains(".") && !content.contains(" ") -> "📧 Email App"
-                content.matches("\\+?[\\d\\s-()]+".toRegex()) -> "📞 Phone App"
-                content.length > 100 && content.contains("\n") -> "📄 Document App"
-                content.split(" ").size in 1..5 -> "💬 Messaging App"
-                else -> "📱 Unknown App"
-            }
-        }
-
-        /**
-         * Calculate display character based on word count rules:
-         * - A : 2 < word count < 4 (exactly 3 words)
-         * - B: 3 < word count < 7 (4-6 words)
-         * - C: 6 < word count < 10 (7-9 words)
-         * - D: null/empty or other counts (1,2,10+)
-         */
-        fun calculateDisplayCharacter(text: String?): String {
-            return when {
-                text == null -> "D"
-                text.trim().isEmpty() -> "D"
-                else -> {
-                    val wordCount = text.trim().split("\\s+".toRegex()).size
-                    when {
-                        wordCount == 3 -> "A"                    // 2 < 3 < 4
-                        wordCount in 4..6 -> "B"                 // 3 < 4,5,6 < 7  
-                        wordCount in 7..9 -> "C"                 // 6 < 7,8,9 < 10
-                        else -> "D"                               // All other cases (1,2,10+)
-                    }
-                }
-            }
-        }
+        private const val NOTIFICATION_ID = 1001
+        private const val PROCESSING_NOTIFICATION_ID = 9999 // Unique ID for processing notification
+        const val ACTION_START_MONITORING = "START_MONITORING"
+        const val ACTION_STOP_MONITORING = "STOP_MONITORING"
+        const val ACTION_TEST_CLIPBOARD = "TEST_CLIPBOARD"
     }
-
+    
     override fun onCreate() {
         super.onCreate()
-        try {
-            clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            notificationHelper = NotificationHelper(this)
+        LogManager.addLog(TAG, "🤖 ChatGPT Clipboard Service created", LogLevel.INFO)
         
-            // RESOURCE-OPTIMIZED wake lock management
+        // Initialize notification helper
+        notificationHelper = NotificationHelper(this)
+        
+        // Initialize global clipboard manager
+        GlobalClipboardManager.initialize(this)
+        
+        // Initialize real-time notification manager
+        RealTimeNotificationManager.initialize(this)
+        
+        // Acquire wake lock for background operation
+        acquireWakeLock()
+        
+        // Start as foreground service immediately
+        startForegroundService()
+        
+        // Get clipboard manager (keep for compatibility)
+        clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        
+        // Mark service as running
+        isServiceRunning = true
+        
+        // Start monitoring
+        startClipboardMonitoring()
+        
+        LogManager.addLog(TAG, "🚀 Service fully initialized and ready for background operation", LogLevel.SUCCESS)
+    }
+    
+    private fun acquireWakeLock() {
+        try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK, // CPU only, no screen/GPS (battery efficient)
-                "AskGPT::ContinuousClipboardMonitoring"
-            ).apply {
-                // Auto-release after 60 minutes to prevent battery drain
-                acquire(WAKE_LOCK_TIMEOUT)
-            }
-            
-            // EFFICIENT clipboard listener registration (event-driven, 0% CPU when idle)
-            try {
-                clipboardManager?.addPrimaryClipChangedListener(clipboardListener)
-                LogManager.addLog(TAG, "✅ Resource-efficient clipboard listener registered for continuous monitoring", LogLevel.SUCCESS)
-            } catch (e: Exception) {
-                Log.w(TAG, "Clipboard listener registration failed, using polling fallback", e)
-                LogManager.addLog(TAG, "⚠️ Fallback to polling mode for continuous monitoring", LogLevel.WARN)
-            }
-            
-            Log.d(TAG, "Continuous clipboard service created with resource optimization")
-            LogManager.addLog(TAG, "✅ Continuous clipboard service initialized with battery/memory optimization", LogLevel.SUCCESS)
-            
-            // Test clipboard access
-            try {
-                val testClip = clipboardManager?.primaryClip
-                Log.d(TAG, "Clipboard access test: ${testClip != null}")
-                LogManager.addLog(TAG, "📋 Clipboard access verified", LogLevel.INFO)
-                LogManager.addLog(TAG, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAaaaaaa", LogLevel.INFO)
-            } catch (e: Exception) {
-                Log.e(TAG, "Clipboard access failed", e)
-                LogManager.addLog(TAG, "❌ Clipboard access error: ${e.message}", LogLevel.ERROR)
-            }
-            
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "AskGPT::ClipboardMonitoring"
+            )
+            wakeLock?.acquire(10*60*1000L /*10 minutes*/)
+            LogManager.addLog(TAG, "🔋 Wake lock acquired for background operation", LogLevel.INFO)
         } catch (e: Exception) {
-            Log.e(TAG, "Error creating proactive clipboard service", e)
-            LogManager.addLog(TAG, "❌ Error creating proactive service: ${e.message}", LogLevel.ERROR)
+            LogManager.addLog(TAG, "⚠️ Failed to acquire wake lock: ${e.message}", LogLevel.WARN)
+        }
+    }
+    
+    private fun startForegroundService() {
+        try {
+            // Create a minimal notification for the foreground service
+            val notification = notificationHelper.createChatGPTNotification(
+                "Ready", 
+                ""
+            )
+            startForeground(NOTIFICATION_ID, notification)
+            LogManager.addLog(TAG, "✅ Foreground service started", LogLevel.SUCCESS)
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "❌ Failed to start foreground service: ${e.message}", LogLevel.ERROR)
         }
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val continuousMode = intent?.getBooleanExtra("CONTINUOUS_MODE", false) ?: false
-        
-        Log.d(TAG, "Continuous clipboard monitoring service started (flags: $flags, startId: $startId, continuous: $continuousMode)")
-        LogManager.addLog(TAG, "🚀 Continuous clipboard monitoring with resource optimization started", LogLevel.INFO)
-        
-        return try {
-            // Initialize resource-efficient storage system
-            temporaryClipboardStorage = null
-            previousTemporaryStorage = null
-            lastStorageUpdateTime = System.currentTimeMillis()
-            contentChangeCounter = 0
-            
-            // Initialize display variables with resource awareness
-            latestClipboardText = "Continuous clipboard monitoring active..."
-            latestDisplayChar = "�"
-            latestDetectionTime = System.currentTimeMillis()
-            
-            // Create efficient foreground notification for system persistence
-            val initialNotification = notificationHelper.createWordCountNotification(latestDisplayChar, latestClipboardText!!)
-            startForeground(NOTIFICATION_ID, initialNotification)
-            LogManager.addLog(TAG, "✅ Resource-efficient foreground notification created with ID: $NOTIFICATION_ID", LogLevel.SUCCESS)
-            
-            // Start resource-optimized clipboard monitoring
-            startContinuousClipboardMonitoring()
-            
-            LogManager.addLog(TAG, "🚀 Continuous clipboard monitoring active with battery/memory optimization", LogLevel.SUCCESS)
-            
-            // Efficient initial clipboard check (minimal resource usage)
-            serviceScope.launch {
-                delay(300) // Balanced initial check delay
-                proactiveClipboardFetch()
-            }
-            
-            // START_STICKY ensures service restarts automatically (continuous operation)
-            START_STICKY
-        } catch (e: Exception) {
-            Log.e(TAG, "Error starting continuous clipboard service", e)
-            LogManager.addLog(TAG, "❌ Failed to start continuous service: ${e.message}", LogLevel.ERROR)
-            
-            // Fallback notification with minimal resource usage
-            try {
-                val fallbackNotification = notificationHelper.createPersistentNotification()
-                startForeground(NOTIFICATION_ID, fallbackNotification)
-                LogManager.addLog(TAG, "⚠️ Started with resource-efficient fallback notification", LogLevel.WARN)
-            } catch (fallbackError: Exception) {
-                Log.e(TAG, "Failed to create fallback notification", fallbackError)
-                LogManager.addLog(TAG, "❌ Failed to create any notification: ${fallbackError.message}", LogLevel.ERROR)
-            }
-            
-            START_STICKY // Ensure service continues even on error (continuous operation)
+        // Ensure we're running as foreground service
+        if (!isServiceRunning) {
+            startForegroundService()
+            isServiceRunning = true
         }
-    }
-
-    /**
-     * PROACTIVE clipboard fetch - immediately gets, manipulates and stores clipboard data
-     * This is the main function that runs as soon as clipboard content changes
-     */
-    private suspend fun proactiveClipboardFetch(): Boolean {
-        return try {
-            // IMMEDIATE clipboard data fetch (no delays)
-            val clipData = clipboardManager?.primaryClip
-            
-            if (clipData != null && clipData.itemCount > 0) {
-                val newClipText = clipData.getItemAt(0).text?.toString()
+        
+        when (intent?.action) {
+            ACTION_START_MONITORING -> {
+                LogManager.addLog(TAG, "▶️ ChatGPT monitoring started", LogLevel.SUCCESS)
+                backgroundModeEnabled = true
+                startClipboardMonitoring()
+            }
+            ACTION_STOP_MONITORING -> {
+                LogManager.addLog(TAG, "⏸️ ChatGPT monitoring stopped", LogLevel.WARN)
+                backgroundModeEnabled = false
+                stopClipboardMonitoring()
+            }
+            ACTION_TEST_CLIPBOARD -> {
+                LogManager.addLog(TAG, "🧪 Float button signal received - starting enhanced clipboard processing", LogLevel.INFO)
+                LogManager.addLog(TAG, "🔍 Service state - isProcessing: $isProcessing", LogLevel.DEBUG)
                 
-                if (!newClipText.isNullOrEmpty()) {
-                    // LOG THE RAW CLIPBOARD CONTENT IMMEDIATELY
-                    val contentPreview = if (newClipText.length > 80) {
-                        newClipText.take(80) + "..."
-                    } else {
-                        newClipText
-                    }
-                    
-                    Log.d(TAG, "📋 RAW CLIPBOARD CONTENT: \"$contentPreview\"")
-                    LogManager.addLog(TAG, "📋 CLIPBOARD: \"$contentPreview\"", LogLevel.INFO)
-                    
-                    // Show content analysis
-                    val wordCount = newClipText.trim().split("\\s+".toRegex()).size
-                    val lines = newClipText.split("\n").size
-                    val hasUrl = newClipText.contains("http")
-                    val hasEmail = newClipText.contains("@") && newClipText.contains(".")
-                    
-                    Log.d(TAG, "📊 ANALYSIS: $wordCount words, $lines lines, URL: $hasUrl, Email: $hasEmail")
-                    LogManager.addLog(TAG, "📊 $wordCount words, $lines lines", LogLevel.INFO)
-                    
-                    // Store immediately in temporary storage
-                    val processedText = manipulateClipboardText(newClipText.trim())
-                    
-                    // Check if content actually changed compared to temporary storage
-                    if (hasContentChangedFromStorage(processedText)) {
-                        // Update temporary storage with new content
-                        updateTemporaryStorage(processedText)
-                        
-                        Log.d(TAG, "� CONTENT SAVED: \"${processedText.take(50)}...\"")
-                        LogManager.addLog(TAG, "� SAVED: \"${processedText.take(30)}...\"", LogLevel.SUCCESS)
-                        
-                        // IMMEDIATE notification and processing
-                        executeProactiveActions(processedText)
-                        
-                        return true
-                    } else {
-                        Log.d(TAG, "🔄 DUPLICATE: Content already exists - no save needed")
-                        LogManager.addLog(TAG, "🔄 DUPLICATE: Content unchanged", LogLevel.WARN)
-                        return false
-                    }
-                } else {
-                    Log.d(TAG, "📋 EMPTY: Clipboard contains no text")
-                    LogManager.addLog(TAG, "📋 EMPTY: No text in clipboard", LogLevel.WARN)
-                    
-                    // Handle empty clipboard - fetch latest content instead of clearing
-                    if (temporaryClipboardStorage != null) {
-                        clearTemporaryStorage()
-                        executeProactiveActions(temporaryClipboardStorage) // Use latest fetched content
-                        return true
-                    }
-                    return false
-                }
-            } else {
-                Log.d(TAG, "❌ CLIPBOARD ACCESS: No data available")
-                LogManager.addLog(TAG, "❌ NO DATA: Clipboard access failed", LogLevel.ERROR)
+                // Check if we should return to Chrome after showing app
+                shouldReturnToChrome = intent.getBooleanExtra("RETURN_TO_CHROME_AFTER_APP", false)
+                LogManager.addLog(TAG, "🌐 Chrome return workflow enabled: $shouldReturnToChrome", LogLevel.INFO)
                 
-                // Handle null clipboard - fetch latest content instead of clearing
-                if (temporaryClipboardStorage != null) {
-                    clearTemporaryStorage()
-                    executeProactiveActions(temporaryClipboardStorage) // Use latest fetched content
-                    return true
+                // Ensure service is fully initialized
+                if (!::notificationHelper.isInitialized) {
+                    LogManager.addLog(TAG, "🔧 Initializing notification helper", LogLevel.DEBUG)
+                    notificationHelper = NotificationHelper(this)
                 }
-                return false
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in proactive clipboard fetch", e)
-            LogManager.addLog(TAG, "❌ FETCH ERROR: ${e.message}", LogLevel.ERROR)
-            false
-        }
-    }
-    
-    /**
-     * Manipulate clipboard text (you can customize this for your specific needs)
-     */
-    private fun manipulateClipboardText(text: String): String {
-        // Trim whitespace and limit length
-        val cleanText = text.trim()
-        
-        // Apply length limit to prevent memory issues
-        val limitedText = if (cleanText.length > MAX_TEXT_LENGTH) {
-            cleanText.substring(0, MAX_TEXT_LENGTH) + "..."
-        } else {
-            cleanText
-        }
-        
-        // Additional manipulation can be added here
-        // For example: text formatting, keyword extraction, etc.
-        
-        return limitedText
-    }
-    
-    /**
-     * Check if content has changed compared to temporary storage
-     */
-    private fun hasContentChangedFromStorage(newContent: String): Boolean {
-        val currentStorage = temporaryClipboardStorage
-        
-        // If storage is empty, any new content is a change
-        if (currentStorage.isNullOrEmpty()) {
-            return newContent.isNotEmpty()
-        }
-        
-        // Compare with current temporary storage
-        if (currentStorage == newContent) {
-            return false
-        }
-        
-        // Enhanced similarity check for more sensitive detection
-        val similarity = calculateSimilarity(currentStorage, newContent)
-        val hasSignificantChange = similarity < CONTENT_SIMILARITY_THRESHOLD
-        
-        Log.d(TAG, "📊 Content similarity: ${String.format("%.2f", similarity)} (threshold: $CONTENT_SIMILARITY_THRESHOLD)")
-        
-        return hasSignificantChange
-    }
-    
-    /**
-     * Update temporary storage with new content
-     */
-    private fun updateTemporaryStorage(newContent: String) {
-        previousTemporaryStorage = temporaryClipboardStorage
-        temporaryClipboardStorage = newContent
-        lastStorageUpdateTime = System.currentTimeMillis()
-        contentChangeCounter++
-        
-        Log.d(TAG, "📦 STORAGE UPDATE #$contentChangeCounter: \"${newContent.take(30)}...\"")
-        LogManager.addLog(TAG, "🔄 Temporary storage updated (change #$contentChangeCounter)", LogLevel.INFO)
-    }
-    
-    /**
-     * Always get latest content from clipboard instead of clearing storage
-     */
-    private suspend fun clearTemporaryStorage() {
-        try {
-            // Instead of clearing, fetch the latest clipboard content
-            val clipData = clipboardManager?.primaryClip
-            
-            if (clipData != null && clipData.itemCount > 0) {
-                val latestClipText = clipData.getItemAt(0).text?.toString()
                 
-                if (!latestClipText.isNullOrEmpty()) {
-                    // Store the latest clipboard content
-                    val processedText = manipulateClipboardText(latestClipText.trim())
-                    previousTemporaryStorage = temporaryClipboardStorage
-                    temporaryClipboardStorage = processedText
-                    lastStorageUpdateTime = System.currentTimeMillis()
-                    
-                    Log.d(TAG, "� LATEST CONTENT FETCHED: \"${processedText.take(50)}...\"")
-                    LogManager.addLog(TAG, "� Latest clipboard content fetched and stored", LogLevel.INFO)
-                } else {
-                    // If clipboard is empty, keep the current storage
-                    Log.d(TAG, "📋 Clipboard empty - keeping current storage")
-                    LogManager.addLog(TAG, "📋 Clipboard empty - storage maintained", LogLevel.INFO)
-                }
-            } else {
-                // If no clipboard data, keep the current storage
-                Log.d(TAG, "📋 No clipboard data - keeping current storage")
-                LogManager.addLog(TAG, "📋 No clipboard data - storage maintained", LogLevel.INFO)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fetching latest clipboard content", e)
-            LogManager.addLog(TAG, "❌ Error fetching latest content: ${e.message}", LogLevel.ERROR)
-        }
-    }
-    
-    /**
-     * Execute proactive actions when content changes
-     */
-    private suspend fun executeProactiveActions(processedText: String?) {
-        try {
-            // Update tracking variables for notification
-            latestClipboardText = processedText ?: "Clipboard cleared"
-            latestDisplayChar = calculateDisplayCharacter(processedText)
-            latestDetectionTime = System.currentTimeMillis()
-            lastClipboardText = processedText
-            
-            // Add to clipboard history manager - RECORD EVERY ENTRY WITH TIMESTAMP
-            val contentToRecord = processedText ?: ""
-            ClipboardHistoryManager.addEntry(contentToRecord, latestDisplayChar)
-            
-            // Add to selected text manager for history (existing functionality)
-            if (!processedText.isNullOrEmpty()) {
-                SelectedTextManager.addSelectedText(processedText)
-            }
-            
-            // IMMEDIATE notification update
-            updateForegroundNotificationImmediately()
-            
-            Log.d(TAG, "⚡ PROACTIVE ACTIONS EXECUTED: Notification sent, history updated")
-            LogManager.addLog(TAG, "✅ PROACTIVE COMPLETE: \"${processedText?.take(30) ?: "cleared"}\" -> $latestDisplayChar (recorded to history)", LogLevel.SUCCESS)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error executing proactive actions", e)
-            LogManager.addLog(TAG, "❌ PROACTIVE ACTION ERROR: ${e.message}", LogLevel.ERROR)
-        }
-    }
-
-    private fun startClipboardMonitoring() {
-        // Cancel any existing monitoring
-        clipboardCheckJob?.cancel()
-        
-        Log.d(TAG, "Starting enhanced background clipboard monitoring...")
-        LogManager.addLog(TAG, "🚀 Starting enhanced background monitoring (${currentCheckInterval}ms with cross-app detection)", LogLevel.INFO)
-        
-        // Start enhanced background clipboard monitoring with cross-app detection
-        clipboardCheckJob = serviceScope.launch {
-            var consecutiveErrors = 0
-            val maxConsecutiveErrors = 5 // Increased for better stability
-            var lastHealthCheck = System.currentTimeMillis()
-            val healthCheckInterval = 30000L // 30 seconds
-            
-            while (isActive) {
-                try {
-                    // Enhanced clipboard check with cross-app processing
-                    val hadChange = proactiveClipboardFetch()
-                    
-                    // Background-optimized interval adjustment
-                    adjustBackgroundInterval(hadChange)
-                    
-                    // Periodic health check for background persistence
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - lastHealthCheck > healthCheckInterval) {
-                        ensureBackgroundPersistence()
-                        lastHealthCheck = currentTime
-                    }
-                    
-                    consecutiveErrors = 0 // Reset error count on success
-                    delay(currentCheckInterval)
-                    
-                } catch (e: Exception) {
-                    consecutiveErrors++
-                    Log.e(TAG, "Error in background monitoring (attempt $consecutiveErrors)", e)
-                    LogManager.addLog(TAG, "❌ Background monitoring error #$consecutiveErrors: ${e.message}", LogLevel.ERROR)
-                    
-                    if (consecutiveErrors >= maxConsecutiveErrors) {
-                        Log.e(TAG, "Too many consecutive errors, implementing recovery strategy...")
-                        LogManager.addLog(TAG, "🔄 Implementing enhanced error recovery", LogLevel.WARN)
+                // Enhanced float button processing with aggressive clipboard refresh
+                serviceScope.launch {
+                    try {
+                        // Step 0: Optimized clipboard refresh for float button
+                        LogManager.addLog(TAG, "⚡ Step 0: Fast clipboard refresh for float button", LogLevel.DEBUG)
                         
-                        // Enhanced recovery strategy
-                        try {
-                            // Re-register clipboard listener
-                            clipboardManager?.removePrimaryClipChangedListener(clipboardListener)
-                            delay(1000)
-                            clipboardManager?.addPrimaryClipChangedListener(clipboardListener)
-                            LogManager.addLog(TAG, "🔧 Clipboard listener re-registered", LogLevel.INFO)
-                        } catch (recoveryError: Exception) {
-                            LogManager.addLog(TAG, "⚠️ Listener recovery failed, continuing with polling", LogLevel.WARN)
+                        // Reduced refresh attempts but faster
+                        repeat(2) { attempt ->
+                            GlobalClipboardManager.refreshClipboardNow()
+                            delay(25) // Reduced from 50ms to 25ms
+                            LogManager.addLog(TAG, "🔄 Quick refresh attempt ${attempt + 1}/2", LogLevel.DEBUG)
                         }
                         
-                        delay(3000) // Wait 3 seconds before restart
-                        consecutiveErrors = 0
-                        currentCheckInterval = ULTRA_FAST_CHECK_INTERVAL // Reset to ultra-fast
-                    } else {
-                        delay(2000) // Wait 2 seconds on error for stability
-                    }
-                }
-            }
-        }
-    }
-    
-    /**
-     * RESOURCE-OPTIMIZED CONTINUOUS CLIPBOARD MONITORING
-     * 
-     * This method implements highly efficient continuous clipboard monitoring with:
-     * - Event-driven detection (OnPrimaryClipChangedListener) for 0% CPU when idle
-     * - Adaptive polling intervals that scale with activity
-     * - Intelligent error recovery with exponential backoff
-     * - Battery-conscious wake lock management
-     * - Memory-efficient temporary storage
-     */
-    private fun startContinuousClipboardMonitoring() {
-        // Cancel any existing monitoring to prevent resource conflicts
-        clipboardCheckJob?.cancel()
-        
-        Log.d(TAG, "Starting resource-optimized continuous clipboard monitoring...")
-        LogManager.addLog(TAG, "🚀 Continuous monitoring with resource optimization (${currentCheckInterval}ms adaptive intervals)", LogLevel.INFO)
-        
-        // Start resource-efficient continuous monitoring
-        clipboardCheckJob = serviceScope.launch {
-            var consecutiveErrors = 0
-            var lastHealthCheck = System.currentTimeMillis()
-            var lastActivityTime = System.currentTimeMillis()
-            
-            while (isActive) {
-                try {
-                    // Resource-efficient clipboard check
-                    val hadChange = proactiveClipboardFetch()
-                    
-                    // Update activity tracking for resource optimization
-                    if (hadChange) {
-                        lastActivityTime = System.currentTimeMillis()
-                    }
-                    
-                    // Adaptive interval adjustment based on activity and resources
-                    adjustContinuousInterval(hadChange, lastActivityTime)
-                    
-                    // Periodic health and resource management
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - lastHealthCheck > HEALTH_CHECK_INTERVAL) {
-                        ensureContinuousResourceHealth()
-                        lastHealthCheck = currentTime
-                    }
-                    
-                    consecutiveErrors = 0 // Reset error count on success
-                    delay(currentCheckInterval)
-                    
-                } catch (e: Exception) {
-                    consecutiveErrors++
-                    Log.e(TAG, "Error in continuous monitoring (attempt $consecutiveErrors)", e)
-                    LogManager.addLog(TAG, "❌ Continuous monitoring error #$consecutiveErrors: ${e.message}", LogLevel.ERROR)
-                    
-                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                        Log.e(TAG, "Implementing resource-conscious recovery strategy...")
-                        LogManager.addLog(TAG, "🔄 Resource-conscious error recovery initiated", LogLevel.WARN)
+                        // Additional system-level refresh
+                        GlobalClipboardManager.forceSyncFromSystem()
+                        delay(50) // Reduced from 100ms to 50ms
                         
-                        // Resource-efficient recovery
-                        try {
-                            // Re-register clipboard listener with minimal overhead
-                            clipboardManager?.removePrimaryClipChangedListener(clipboardListener)
-                            delay(1000) // Brief pause for resource stability
-                            clipboardManager?.addPrimaryClipChangedListener(clipboardListener)
-                            LogManager.addLog(TAG, "🔧 Clipboard listener re-registered with resource optimization", LogLevel.INFO)
-                        } catch (recoveryError: Exception) {
-                            LogManager.addLog(TAG, "⚠️ Listener recovery failed, using efficient polling fallback", LogLevel.WARN)
-                        }
+                        // Show processing notification
+                        showProcessingNotification()
                         
-                        // Exponential backoff for resource preservation
-                        delay(minOf(3000L * consecutiveErrors, 15000L)) // Cap at 15 seconds
-                        consecutiveErrors = 0
-                        currentCheckInterval = ULTRA_FAST_CHECK_INTERVAL // Reset to responsive mode
-                    } else {
-                        // Progressive delay for resource conservation
-                        delay(1000L * consecutiveErrors) // Increasing delay with errors
+                        // Step 1: Final clipboard sync from system
+                        LogManager.addLog(TAG, "📋 Step 1: Final clipboard sync from system", LogLevel.INFO)
+                        updateClipboardStateFromSystem()
+                        
+                        // Step 2: Minimal delay before processing (optimized)
+                        LogManager.addLog(TAG, "⚡ Step 1.5: Quick state sync (50ms)", LogLevel.DEBUG)
+                        delay(50) // Reduced from 100ms to 50ms
+                        
+                        // Step 3: Process with ChatGPT (FORCED - ignore duplicates)
+                        LogManager.addLog(TAG, "🤖 Step 2: Processing with ChatGPT (FORCED - bypassing duplicates)", LogLevel.INFO)
+                        handleClipboardChangeForced() // Force immediate processing regardless of duplicate content
+                        
+                        LogManager.addLog(TAG, "✅ Optimized float button processing pipeline completed", LogLevel.SUCCESS)
+                        
+                    } catch (e: Exception) {
+                        LogManager.addLog(TAG, "❌ Error in optimized float button processing: ${e.message}", LogLevel.ERROR)
+                        
+                        // Fallback to immediate processing
+                        LogManager.addLog(TAG, "🔄 Falling back to immediate processing", LogLevel.WARN)
+                        updateClipboardStateFromSystem()
+                        handleClipboardChangeForced()
                     }
                 }
             }
+            else -> {
+                LogManager.addLog(TAG, "🚀 Service started - ready for overlay button triggers", LogLevel.INFO)
+                backgroundModeEnabled = true
+                startClipboardMonitoring()
+            }
         }
+        
+        // Return START_STICKY to ensure the service restarts if killed
+        return START_STICKY
     }
     
-    /**
-     * Enhanced background interval adjustment for cross-app monitoring
-     */
-    private fun adjustBackgroundInterval(hadChange: Boolean) {
-        if (hadChange) {
-            consecutiveNoChanges = 0
-            isProactiveMode = true
-            currentCheckInterval = ULTRA_FAST_CHECK_INTERVAL
-            LogManager.addLog(TAG, "⚡ ULTRA-FAST mode: ${currentCheckInterval}ms (cross-app activity)", LogLevel.DEBUG)
-        } else {
-            consecutiveNoChanges++
-            
-            when {
-                consecutiveNoChanges > 15 && isProactiveMode -> {
-                    // Switch to fast mode after 15 checks for better background responsiveness
-                    currentCheckInterval = FAST_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🔥 Background fast mode: ${currentCheckInterval}ms", LogLevel.DEBUG)
-                }
-                consecutiveNoChanges > 40 -> {
-                    // Switch to normal mode after 40 checks for background efficiency
-                    isProactiveMode = false
-                    currentCheckInterval = CLIPBOARD_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🔄 Background normal mode: ${currentCheckInterval}ms", LogLevel.DEBUG)
-                }
-                consecutiveNoChanges > 80 -> {
-                    // Switch to slow mode for battery optimization in background
-                    currentCheckInterval = SLOW_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🐌 Background power saving: ${currentCheckInterval}ms", LogLevel.DEBUG)
-                }
-            }
-        }
-    }
-
-    /**
-     * Ensure background persistence and health
-     */
-    private fun ensureBackgroundPersistence() {
-        try {
-            // Check and refresh wake lock if needed
-            if (wakeLock?.isHeld != true) {
-                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                wakeLock = powerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
-                    "AskGPT::ClipboardMonitoringWakeLock"
-                ).apply {
-                    acquire(60*60*1000L /*60 minutes*/)
-                }
-                LogManager.addLog(TAG, "🔋 Wake lock refreshed for background persistence", LogLevel.INFO)
-            }
-            
-            // Verify notification is still active
-            serviceScope.launch {
-                updateForegroundNotificationImmediately()
-            }
-            
-            // Test clipboard access
-            try {
-                val testClip = clipboardManager?.primaryClip
-                if (testClip == null) {
-                    LogManager.addLog(TAG, "📋 Background clipboard access verified", LogLevel.DEBUG)
-                }
-            } catch (e: Exception) {
-                LogManager.addLog(TAG, "⚠️ Background clipboard access issue: ${e.message}", LogLevel.WARN)
-            }
-            
-        } catch (e: Exception) {
-            LogManager.addLog(TAG, "❌ Background persistence check error: ${e.message}", LogLevel.ERROR)
-        }
-    }
-
-    /**
-     * Adjust checking interval for proactive mode (ultra-responsive)
-     */
-    private fun adjustProactiveInterval(hadChange: Boolean) {
-        if (hadChange) {
-            consecutiveNoChanges = 0
-            isProactiveMode = true
-            currentCheckInterval = ULTRA_FAST_CHECK_INTERVAL
-            LogManager.addLog(TAG, "⚡ ULTRA-FAST mode: ${currentCheckInterval}ms (proactive activity)", LogLevel.DEBUG)
-        } else {
-            consecutiveNoChanges++
-            
-            when {
-                consecutiveNoChanges > 10 && isProactiveMode -> {
-                    // Switch to fast mode after 10 checks without changes (reduced threshold)
-                    currentCheckInterval = FAST_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🔥 Fast mode: ${currentCheckInterval}ms", LogLevel.DEBUG)
-                }
-                consecutiveNoChanges > 30 -> {
-                    // Switch to normal mode after 30 checks (reduced from 50)
-                    isProactiveMode = false
-                    currentCheckInterval = CLIPBOARD_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🔄 Normal mode: ${currentCheckInterval}ms", LogLevel.DEBUG)
-                }
-                consecutiveNoChanges > 60 -> {
-                    // Switch to slow mode for power saving (reduced from 50)
-                    currentCheckInterval = SLOW_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🐌 Power saving mode: ${currentCheckInterval}ms", LogLevel.DEBUG)
-                }
-            }
-        }
-    }
-
-    /**
-     * RESOURCE-OPTIMIZED INTERVAL ADJUSTMENT for continuous monitoring
-     * 
-     * Intelligently adjusts polling intervals based on clipboard activity and system resources.
-     * Uses exponential scaling to minimize battery usage during idle periods.
-     */
-    private fun adjustContinuousInterval(hadChange: Boolean, lastActivityTime: Long) {
-        val timeSinceActivity = System.currentTimeMillis() - lastActivityTime
-        
-        if (hadChange) {
-            consecutiveNoChanges = 0
-            isProactiveMode = true
-            currentCheckInterval = ULTRA_FAST_CHECK_INTERVAL
-            LogManager.addLog(TAG, "⚡ CONTINUOUS ULTRA-FAST: ${currentCheckInterval}ms (clipboard activity)", LogLevel.DEBUG)
-        } else {
-            consecutiveNoChanges++
-            
-            when {
-                consecutiveNoChanges > FAST_MODE_THRESHOLD && isProactiveMode -> {
-                    // Resource-conscious fast mode
-                    currentCheckInterval = FAST_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🔥 Continuous fast mode: ${currentCheckInterval}ms (resource optimized)", LogLevel.DEBUG)
-                }
-                consecutiveNoChanges > NORMAL_MODE_THRESHOLD -> {
-                    // Battery-conscious normal mode
-                    isProactiveMode = false
-                    currentCheckInterval = CLIPBOARD_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🔄 Continuous normal mode: ${currentCheckInterval}ms (battery optimized)", LogLevel.DEBUG)
-                }
-                consecutiveNoChanges > SLOW_MODE_THRESHOLD || timeSinceActivity > 60000 -> {
-                    // Deep power saving for extended idle periods
-                    currentCheckInterval = SLOW_CHECK_INTERVAL
-                    LogManager.addLog(TAG, "🐌 Continuous power saving: ${currentCheckInterval}ms (deep optimization)", LogLevel.DEBUG)
-                }
-            }
-        }
-    }
-
-    /**
-     * CONTINUOUS RESOURCE HEALTH MANAGEMENT
-     * 
-     * Monitors and maintains optimal resource usage for continuous operation:
-     * - Wake lock health and renewal
-     * - Memory usage optimization
-     * - Notification persistence
-     * - Clipboard access verification
-     */
-    private fun ensureContinuousResourceHealth() {
-        try {
-            // Resource-efficient wake lock management
-            if (wakeLock?.isHeld != true) {
-                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                wakeLock = powerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
-                    "AskGPT::ContinuousClipboardMonitoring"
-                ).apply {
-                    acquire(WAKE_LOCK_TIMEOUT) // Auto-release for battery protection
-                }
-                LogManager.addLog(TAG, "🔋 Wake lock renewed for continuous operation (battery protected)", LogLevel.INFO)
-            }
-            
-            // Memory-efficient notification persistence
-            serviceScope.launch {
-                updateForegroundNotificationImmediately()
-            }
-            
-            // Lightweight clipboard access verification
-            try {
-                val testAccess = clipboardManager?.primaryClip
-                // Access test successful (no action needed for null result)
-                LogManager.addLog(TAG, "📋 Continuous clipboard access verified (resource efficient)", LogLevel.DEBUG)
-            } catch (e: Exception) {
-                LogManager.addLog(TAG, "⚠️ Clipboard access check failed: ${e.message}", LogLevel.WARN)
-            }
-            
-            // Memory optimization - clear old temporary storage
-            if (System.currentTimeMillis() - lastStorageUpdateTime > 300000) { // 5 minutes
-                previousTemporaryStorage = null
-                LogManager.addLog(TAG, "🧹 Memory optimized - cleared old temporary storage", LogLevel.DEBUG)
-            }
-            
-        } catch (e: Exception) {
-            LogManager.addLog(TAG, "❌ Continuous resource health check error: ${e.message}", LogLevel.ERROR)
-        }
-    }
-
-    /**
-     * Calculate content similarity (simple approach for performance)
-     */
-    private fun calculateSimilarity(text1: String, text2: String): Double {
-        if (text1 == text2) return 1.0
-        if (text1.isEmpty() || text2.isEmpty()) return 0.0
-        
-        val longer = if (text1.length > text2.length) text1 else text2
-        val shorter = if (text1.length <= text2.length) text1 else text2
-        
-        if (longer.isEmpty()) return 1.0
-        
-        val editDistance = calculateEditDistance(longer, shorter)
-        return (longer.length - editDistance) / longer.length.toDouble()
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
     
-    /**
-     * Simple edit distance calculation for similarity
-     */
-    private fun calculateEditDistance(str1: String, str2: String): Int {
-        val dp = Array(str1.length + 1) { IntArray(str2.length + 1) }
-        
-        for (i in 0..str1.length) dp[i][0] = i
-        for (j in 0..str2.length) dp[0][j] = j
-        
-        for (i in 1..str1.length) {
-            for (j in 1..str2.length) {
-                dp[i][j] = if (str1[i - 1] == str2[j - 1]) {
-                    dp[i - 1][j - 1]
-                } else {
-                    1 + minOf(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
-                }
-            }
-        }
-        
-        return dp[str1.length][str2.length]
-    }
-
-    /**
-     * Update foreground notification with latest detection immediately
-     * Enhanced persistence during accessibility events
-     */
-    private suspend fun updateForegroundNotificationImmediately() {
-        try {
-            withContext(Dispatchers.Main) {
-                val notification = notificationHelper.createWordCountNotification(latestDisplayChar, latestClipboardText ?: "")
-                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                
-                // Force update the foreground notification to ensure persistence
-                // This ensures the clipboard result icon persists even during other accessibility events
-                startForeground(NOTIFICATION_ID, notification)
-                
-                Log.d(TAG, "🔔 IMMEDIATE notification updated with PERSISTENT icon: $latestDisplayChar")
-                LogManager.addLog(TAG, "✅ IMMEDIATE PERSISTENT notification sent: $latestDisplayChar", LogLevel.SUCCESS)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating immediate notification", e)
-            LogManager.addLog(TAG, "❌ IMMEDIATE notification error: ${e.message}", LogLevel.ERROR)
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
-        Log.d(TAG, "Enhanced clipboard service being destroyed")
-        LogManager.addLog(TAG, "🛑 Enhanced clipboard service destroyed - cleanup initiated", LogLevel.INFO)
+        LogManager.addLog(TAG, "🛑 ChatGPT Service destroyed", LogLevel.WARN)
         
+        // Release wake lock
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+                LogManager.addLog(TAG, "🔋 Wake lock released", LogLevel.INFO)
+            }
+        }
+        
+        // Clean up resources
+        stopClipboardMonitoring()
+        stopPeriodicClipboardCheck()
+        serviceScope.cancel()
+        isServiceRunning = false
+        
+        // Destroy notification manager
+        RealTimeNotificationManager.destroy()
+    }
+    
+    private fun startClipboardMonitoring() {
         try {
-            // Enhanced cleanup for background monitoring
-            clipboardManager?.removePrimaryClipChangedListener(clipboardListener)
-            LogManager.addLog(TAG, "🔧 Clipboard listener removed", LogLevel.INFO)
+            // Enable both manual trigger mode AND background monitoring for better coverage
+            LogManager.addLog(TAG, "👁️ ChatGPT service initializing - overlay button + background monitoring", LogLevel.SUCCESS)
             
-            // Enhanced wake lock management
-            wakeLock?.let {
-                if (it.isHeld) {
-                    it.release()
-                    Log.d(TAG, "Enhanced wake lock released for background monitoring")
-                    LogManager.addLog(TAG, "🔋 Wake lock released", LogLevel.INFO)
+            // Test initial clipboard access
+            testClipboardAccess()
+            
+            // Start periodic background check if enabled
+            if (backgroundModeEnabled) {
+                startPeriodicClipboardCheck()
+                LogManager.addLog(TAG, "🔄 Background clipboard monitoring enabled", LogLevel.INFO)
+            }
+            
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "❌ Failed to initialize clipboard monitoring: ${e.message}", LogLevel.ERROR)
+        }
+    }
+    
+    private fun startPeriodicClipboardCheck() {
+        stopPeriodicClipboardCheck() // Stop any existing timer
+        
+        if (!backgroundModeEnabled) {
+            LogManager.addLog(TAG, "⏸️ Background mode disabled - skipping periodic check", LogLevel.INFO)
+            return
+        }
+        
+        clipboardTimer = Timer()
+        clipboardTimer?.scheduleAtFixedRate(object : TimerTask() {
+            override fun run() {
+                try {
+                    // Check both service and manager processing states for background safety
+                    val serviceProcessing = isProcessing
+                    val managerProcessing = RealTimeNotificationManager.getCurrentProcessingState()
+                    val actuallyProcessing = serviceProcessing || managerProcessing
+                    
+                    if (backgroundModeEnabled && !actuallyProcessing) {
+                        LogManager.addLog(TAG, "🔄 Background clipboard sync check (svc:$serviceProcessing, mgr:$managerProcessing)", LogLevel.DEBUG)
+                        
+                        // First check if clipboard has changed using reliable method
+                        if (GlobalClipboardManager.hasClipboardChanged()) {
+                            LogManager.addLog(TAG, "📋 Clipboard changed detected in background", LogLevel.INFO)
+                            handleClipboardChange()
+                        } else {
+                            // Periodic enhanced sync to ensure we don't miss changes
+                            // Alternate between different sync methods for maximum reliability
+                            val currentTime = System.currentTimeMillis()
+                            if (currentTime % 2 == 0L) {
+                                // Use force sync on even checks
+                                GlobalClipboardManager.forceSyncFromSystem()
+                            } else {
+                                // Use refresh method on odd checks
+                                GlobalClipboardManager.refreshClipboardNow()
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    LogManager.addLog(TAG, "❌ Background sync error: ${e.message}", LogLevel.ERROR)
+                }
+            }
+        }, 2000L, CLIPBOARD_CHECK_INTERVAL) // Start after 2 seconds, then every 1.5 seconds
+        
+        LogManager.addLog(TAG, "⏰ Background clipboard sync started (every ${CLIPBOARD_CHECK_INTERVAL/1000}s)", LogLevel.INFO)
+    }
+    
+    private fun stopPeriodicClipboardCheck() {
+        clipboardTimer?.cancel()
+        clipboardTimer = null
+        LogManager.addLog(TAG, "⏰ Periodic clipboard checking stopped", LogLevel.INFO)
+    }
+    
+    private fun testClipboardAccess() {
+        try {
+            val clipData = clipboardManager?.primaryClip
+            if (clipData != null) {
+                LogManager.addLog(TAG, "✅ Clipboard access test successful - ${clipData.itemCount} items", LogLevel.SUCCESS)
+                // Log current clipboard content for debugging
+                if (clipData.itemCount > 0) {
+                    val currentText = clipData.getItemAt(0).text?.toString()
+                    LogManager.addLog(TAG, "📋 Current clipboard: '${currentText?.take(50) ?: "null"}${if ((currentText?.length ?: 0) > 50) "..." else ""}'", LogLevel.DEBUG)
+                }
+            } else {
+                LogManager.addLog(TAG, "⚠️ Clipboard is empty or inaccessible", LogLevel.WARN)
+            }
+        } catch (e: SecurityException) {
+            LogManager.addLog(TAG, "🔒 Clipboard access denied in test: ${e.message}", LogLevel.ERROR)
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "❌ Clipboard test error: ${e.message}", LogLevel.ERROR)
+        }
+    }
+    
+    /**
+     * Updates clipboard state from current system clipboard when float button is pressed
+     * This ensures we have the latest clipboard content before processing
+     * Enhanced with multiple fallback mechanisms and aggressive fresh content retrieval
+     */
+    private fun updateClipboardStateFromSystem() {
+        try {
+            LogManager.addLog(TAG, "🔄 AGGRESSIVE clipboard sync from system for float button action", LogLevel.INFO)
+            
+            // Get current cached clipboard for comparison
+            val previousClipboard = GlobalClipboardManager.getLastKnownClipboardText()
+            LogManager.addLog(TAG, "📋 Previous clipboard: ${previousClipboard?.take(50)}...", LogLevel.DEBUG)
+            
+            // Method 1: Multiple refresh attempts with delays
+            var currentClipText: String?
+            var syncMethod = "unknown"
+            
+            // Attempt 1: Immediate refresh
+            currentClipText = GlobalClipboardManager.refreshClipboardNow()
+            if (!currentClipText.isNullOrBlank()) {
+                syncMethod = "immediateRefresh"
+                LogManager.addLog(TAG, "✅ Immediate refresh successful", LogLevel.DEBUG)
+            }
+            
+            // Attempt 2: Refresh with longer delay if first failed
+            if (currentClipText.isNullOrBlank()) {
+                LogManager.addLog(TAG, "⚠️ Immediate refresh failed, trying with delay", LogLevel.WARN)
+                Thread.sleep(200) // Wait for clipboard system to stabilize
+                currentClipText = GlobalClipboardManager.refreshClipboardNow()
+                if (!currentClipText.isNullOrBlank()) {
+                    syncMethod = "delayedRefresh"
+                    LogManager.addLog(TAG, "✅ Delayed refresh successful", LogLevel.DEBUG)
                 }
             }
             
-            // Cancel all background monitoring coroutines
-            clipboardCheckJob?.cancel()
-            serviceScope.cancel()
-            LogManager.addLog(TAG, "⏹️ Background monitoring stopped", LogLevel.INFO)
-            
-            // Export clipboard history on service destruction
-            try {
-                ClipboardHistoryManager.exportToFile(this)
-                LogManager.addLog(TAG, "📄 Clipboard history exported before shutdown", LogLevel.SUCCESS)
-            } catch (e: Exception) {
-                LogManager.addLog(TAG, "⚠️ History export failed: ${e.message}", LogLevel.WARN)
+            // Attempt 3: Force sync fallback
+            if (currentClipText.isNullOrBlank()) {
+                LogManager.addLog(TAG, "⚠️ Refresh methods failed, trying force sync", LogLevel.WARN)
+                currentClipText = GlobalClipboardManager.forceSyncFromSystem()
+                if (!currentClipText.isNullOrBlank()) {
+                    syncMethod = "forceSync"
+                    LogManager.addLog(TAG, "✅ Force sync successful", LogLevel.DEBUG)
+                }
             }
             
-            // Clear state
-            lastClipboardText = null
-            latestClipboardText = null
-            clipboardManager = null
-            wakeLock = null
+            // Attempt 4: Direct clipboard access with multiple tries
+            if (currentClipText.isNullOrBlank()) {
+                LogManager.addLog(TAG, "⚠️ All enhanced methods failed, trying multiple direct access attempts", LogLevel.WARN)
+                for (attempt in 1..3) {
+                    try {
+                        if (attempt > 1) Thread.sleep((100 * attempt).toLong()) // Increasing delays
+                        val clipData = clipboardManager?.primaryClip
+                        if (clipData != null && clipData.itemCount > 0) {
+                            val directText = clipData.getItemAt(0)?.text?.toString()
+                            if (!directText.isNullOrBlank()) {
+                                currentClipText = directText
+                                syncMethod = "directAccess_attempt$attempt"
+                                LogManager.addLog(TAG, "✅ Direct access successful on attempt $attempt", LogLevel.DEBUG)
+                                break
+                            }
+                        }
+                    } catch (e: Exception) {
+                        LogManager.addLog(TAG, "❌ Direct access attempt $attempt failed: ${e.message}", LogLevel.ERROR)
+                    }
+                }
+            }
             
-            Log.d(TAG, "Enhanced service cleanup completed with history export")
-            LogManager.addLog(TAG, "✅ Enhanced cleanup completed", LogLevel.SUCCESS)
+            if (!currentClipText.isNullOrBlank()) {
+                // Update global state and service state
+                GlobalClipboardManager.updateClipboardState(currentClipText)
+                lastClipboardText = currentClipText
+                
+                // Log the result with comparison to previous
+                if (currentClipText != previousClipboard) {
+                    LogManager.addLog(TAG, "✅ FRESH clipboard content retrieved via $syncMethod: ${currentClipText.take(50)}... (${currentClipText.length} chars)", LogLevel.SUCCESS)
+                    LogManager.addLog(TAG, "📊 Clipboard change detected: Previous ≠ Current", LogLevel.INFO)
+                } else {
+                    LogManager.addLog(TAG, "📋 Same clipboard content via $syncMethod: ${currentClipText.take(50)}... (${currentClipText.length} chars)", LogLevel.INFO)
+                    LogManager.addLog(TAG, "📊 No clipboard change: Previous = Current", LogLevel.DEBUG)
+                }
+            } else {
+                LogManager.addLog(TAG, "❌ ALL clipboard sync methods failed - no content available", LogLevel.ERROR)
+                LogManager.addLog(TAG, "📋 Will use previous clipboard: ${previousClipboard?.take(50)}...", LogLevel.WARN)
+            }
             
         } catch (e: Exception) {
-            Log.e(TAG, "Error during enhanced service cleanup", e)
-            LogManager.addLog(TAG, "❌ Enhanced cleanup error: ${e.message}", LogLevel.ERROR)
+            LogManager.addLog(TAG, "❌ Error during aggressive clipboard sync: ${e.message}", LogLevel.ERROR)
+            e.printStackTrace()
         }
     }
-
-    private fun restartService() {
+    
+    private fun stopClipboardMonitoring() {
+        backgroundModeEnabled = false
+        stopPeriodicClipboardCheck()
+        LogManager.addLog(TAG, "� Clipboard monitoring stopped", LogLevel.WARN)
+    }
+    
+    private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
+        LogManager.addLog(TAG, "📋 Clipboard change detected via listener!", LogLevel.SUCCESS)
+        
+        // Auto-activate Chrome return workflow when clipboard changes
+        shouldReturnToChrome = true
+        LogManager.addLog(TAG, "🌐 Auto-enabling Chrome return workflow for clipboard change", LogLevel.INFO)
+        
+        handleClipboardChange()
+    }
+    
+    private fun handleClipboardChange() {
+        val serviceProcessing = isProcessing
+        val managerProcessing = RealTimeNotificationManager.getCurrentProcessingState()
+        
+        if (serviceProcessing || managerProcessing) {
+            LogManager.addLog(TAG, "⏳ Already processing (svc:$serviceProcessing, mgr:$managerProcessing), skipping...", LogLevel.WARN)
+            return
+        }
+        
+        processClipboardContent(false) // Normal processing - skip duplicates
+    }
+    
+    private fun handleClipboardChangeForced() {
+        LogManager.addLog(TAG, "🎯 handleClipboardChangeForced() called", LogLevel.DEBUG)
+        
+        val serviceProcessing = isProcessing
+        val managerProcessing = RealTimeNotificationManager.getCurrentProcessingState()
+        
+        if (serviceProcessing || managerProcessing) {
+            LogManager.addLog(TAG, "⏳ Force processing requested but already processing (svc:$serviceProcessing, mgr:$managerProcessing), skipping...", LogLevel.WARN)
+            return
+        }
+        
+        LogManager.addLog(TAG, "🚀 Starting forced clipboard processing...", LogLevel.INFO)
+        processClipboardContent(true) // Forced processing - process even duplicates
+    }
+    
+    private fun processClipboardContent(forceProcess: Boolean) {
+        
         try {
-            val intent = Intent(this, ClipboardMonitoringService::class.java)
-            startService(intent)
-            Log.d(TAG, "Service restart initiated")
-            LogManager.addLog(TAG, "🔄 Service restart initiated", LogLevel.INFO)
+            // Try to get clipboard content using global manager first
+            val clipboardText = GlobalClipboardManager.getCurrentClipboardText()
+            
+            if (clipboardText.isNullOrBlank()) {
+                // Fallback to direct clipboard access
+                val clipData = clipboardManager?.primaryClip
+                
+                if (clipData == null) {
+                    LogManager.addLog(TAG, "❌ Clipboard data is null (both global and direct)", LogLevel.DEBUG)
+                    return
+                }
+                
+                if (clipData.itemCount <= 0) {
+                    LogManager.addLog(TAG, "❌ Clipboard has no items", LogLevel.DEBUG)
+                    return
+                }
+                
+                val directText = clipData.getItemAt(0)?.text?.toString()
+                if (directText.isNullOrBlank()) {
+                    LogManager.addLog(TAG, "❌ Clipboard text is null or blank", LogLevel.DEBUG)
+                    return
+                }
+                
+                // Update global state with direct access result
+                GlobalClipboardManager.updateClipboardState(directText)
+                processText(directText, forceProcess)
+            } else {
+                // Use global clipboard text
+                processText(clipboardText, forceProcess)
+            }
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to restart service", e)
-            LogManager.addLog(TAG, "❌ Service restart failed: ${e.message}", LogLevel.ERROR)
+            LogManager.addLog(TAG, "❌ Error processing clipboard: ${e.message}", LogLevel.ERROR)
+            e.printStackTrace()
         }
     }
-
-    override fun onBind(intent: Intent?): IBinder? = null
+    
+    private fun processText(clipText: String, forceProcess: Boolean) {
+        try {
+            // Enhanced duplicate detection
+            if (!forceProcess) {
+                if (clipText == lastProcessedClipboardContent) {
+                    LogManager.addLog(TAG, "🔄 Duplicate clipboard content detected, skipping processing", LogLevel.INFO)
+                    LogManager.addLog(TAG, "💡 Same content as previously processed: '${clipText.take(50)}${if (clipText.length > 50) "..." else ""}'", LogLevel.DEBUG)
+                    return
+                }
+                
+                if (clipText == lastClipboardText) {
+                    LogManager.addLog(TAG, "📋 Same clipboard content, skipping (use force to process anyway)", LogLevel.DEBUG)
+                    return
+                }
+            }
+            
+            // Update clipboard tracking
+            lastClipboardText = clipText
+            
+            if (forceProcess) {
+                LogManager.addLog(TAG, "🎯 FORCED clipboard processing via overlay button: '${clipText.take(100)}${if (clipText.length > 100) "..." else ""}'", LogLevel.SUCCESS)
+            } else {
+                LogManager.addLog(TAG, "🆕 NEW clipboard text detected: '${clipText.take(100)}${if (clipText.length > 100) "..." else ""}'", LogLevel.SUCCESS)
+            }
+            
+            // Immediately process with ChatGPT
+            LogManager.addLog(TAG, "🚀 Sending to ChatGPT processing immediately", LogLevel.INFO)
+            processChatGPTText(clipText, forceProcess)
+            
+        } catch (e: SecurityException) {
+            LogManager.addLog(TAG, "🔒 Clipboard access denied: ${e.message}", LogLevel.ERROR)
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "❌ Text processing error: ${e.message}", LogLevel.ERROR)
+        }
+    }
+    
+    private fun processChatGPTText(text: String, forceProcess: Boolean = false) {
+        val trimmedText = text.trim()
+        
+        // Start real-time processing updates
+        RealTimeNotificationManager.startProcessing("🚀 Analyzing text...")
+        
+        if (forceProcess) {
+            LogManager.addLog(TAG, "🎯 FORCE processing (float button): ${trimmedText.take(50)}...", LogLevel.INFO)
+        } else {
+            LogManager.addLog(TAG, "🚀 Auto processing: ${trimmedText.take(50)}...", LogLevel.INFO)
+        }
+        
+        // Validate text length
+        if (trimmedText.length < MIN_QUESTION_LENGTH) {
+            LogManager.addLog(TAG, "📝 Text too short for ChatGPT processing (${trimmedText.length} < $MIN_QUESTION_LENGTH)", LogLevel.WARN)
+            RealTimeNotificationManager.errorProcessing("Text too short")
+            return
+        }
+        
+        if (trimmedText.length > MAX_TEXT_LENGTH) {
+            LogManager.addLog(TAG, "📝 Text too long, truncating... (${trimmedText.length} > $MAX_TEXT_LENGTH)", LogLevel.WARN)
+            RealTimeNotificationManager.updateProcessingProgress(20, "✂️ Truncating long text...")
+            val truncatedText = trimmedText.take(MAX_TEXT_LENGTH)
+            processChatGPTQuestion(truncatedText, forceProcess)
+        } else {
+            RealTimeNotificationManager.updateProcessingProgress(30, "✅ Text validated")
+            processChatGPTQuestion(trimmedText, forceProcess)
+        }
+    }
+    
+    private fun processChatGPTQuestion(question: String, forceProcess: Boolean = false) {
+        // Synchronize processing state with RealTimeNotificationManager
+        isProcessing = true
+        
+        serviceScope.launch {
+            try {
+                // Verify that RealTimeNotificationManager is also tracking processing state
+                val managerProcessing = RealTimeNotificationManager.getCurrentProcessingState()
+                LogManager.addLog(TAG, "🔍 Processing state sync - Service: $isProcessing, Manager: $managerProcessing", LogLevel.DEBUG)
+                
+                if (forceProcess) {
+                    LogManager.addLog(TAG, "🎯 FORCE sending to ChatGPT (bypassing cache): ${question.take(50)}...", LogLevel.INFO)
+                } else {
+                    LogManager.addLog(TAG, "🤖 Sending to ChatGPT (using cache): ${question.take(50)}...", LogLevel.INFO)
+                }
+                RealTimeNotificationManager.updateProcessingProgress(50, "🤖 Sending to ChatGPT...")
+                
+                val startTime = System.currentTimeMillis()
+                
+                // Use cache bypass for forced processing (float button)
+                val useCache = !forceProcess
+                val response = chatGPTApi.queryChatGPT(question, useCache)
+                
+                val responseTime = System.currentTimeMillis() - startTime
+                
+                RealTimeNotificationManager.updateProcessingProgress(80, "📝 Processing response...")
+                
+                if (response.isNotEmpty()) {
+                    val cacheStatus = if (forceProcess) "FRESH" else "CACHED"
+                    LogManager.addLog(TAG, "✅ ChatGPT response ($cacheStatus) received (${responseTime}ms). Response: -- ${response}", LogLevel.SUCCESS)
+                    
+                    // Store in history
+                    ChatGPTHistoryManager.addEntry(
+                        question = question,
+                        answer = response,
+                        responseTime = responseTime,
+                        isError = false
+                    )
+                    
+                    RealTimeNotificationManager.updateProcessingProgress(90, "💾 Saving to history...")
+                    
+                    // Show notification with response - only display the response character
+                    val displayChar = determineResponseIcon(response)
+                    val responseNotification = notificationHelper.createChatGPTNotification(displayChar, "")
+                    startForeground(NOTIFICATION_ID, responseNotification)
+                    
+                    RealTimeNotificationManager.completeProcessing("✅ Response ready!")
+                    
+                    LogManager.addLog(TAG, "📱 Response notification updated with icon: $displayChar", LogLevel.SUCCESS)
+                    
+                    // Update last processed content for duplicate detection
+                    lastProcessedClipboardContent = question
+                    LogManager.addLog(TAG, "💾 Updated last processed content for duplicate detection", LogLevel.DEBUG)
+                    
+                    // Auto-launch app to show the result
+                    autoLaunchAppAfterSuccess(question, response, forceProcess)
+                    
+                } else {
+                    LogManager.addLog(TAG, "❌ Empty ChatGPT response", LogLevel.ERROR)
+                    RealTimeNotificationManager.errorProcessing("Empty response")
+                    handleChatGPTError(question, "Empty response received")
+                }
+                
+            } catch (e: Exception) {
+                LogManager.addLog(TAG, "❌ ChatGPT error: ${e.message}", LogLevel.ERROR)
+                RealTimeNotificationManager.errorProcessing("ChatGPT error: ${e.message}")
+                handleChatGPTError(question, e.message ?: "Unknown error")
+            } finally {
+                // Hide processing notification when done
+                hideProcessingNotification()
+                
+                // Ensure both processing states are reset
+                isProcessing = false
+                LogManager.addLog(TAG, "🏁 Processing completed - Service state reset", LogLevel.DEBUG)
+                
+                // Verify sync between service and manager
+                val managerProcessing = RealTimeNotificationManager.getCurrentProcessingState()
+                if (managerProcessing) {
+                    LogManager.addLog(TAG, "⚠️ Manager still shows processing - state mismatch!", LogLevel.WARN)
+                } else {
+                    LogManager.addLog(TAG, "✅ Processing states synchronized", LogLevel.DEBUG)
+                }
+            }
+        }
+    }
+    
+    private fun handleChatGPTError(question: String, errorMessage: String) {
+        // Store error in history
+        ChatGPTHistoryManager.addEntry(
+            question = question,
+            answer = "Error: $errorMessage",
+            responseTime = 0L,
+            isError = true
+        )
+        
+        // Show error notification
+        val errorNotification = notificationHelper.createChatGPTNotification("?", "Error: $errorMessage")
+        startForeground(NOTIFICATION_ID, errorNotification)
+    }
+    
+    private fun determineResponseIcon(response: String): String {
+        // Clean the response: remove special characters, trim, and convert to uppercase
+        val cleanedResponse = response.trim()
+            .replace(Regex("[^A-Za-z]"), "") // Remove all non-letter characters
+            .uppercase()
+            .take(1) // Take only the first letter
+        
+        return when (cleanedResponse) {
+            "A" -> "A"
+            "B" -> "B"
+            "C" -> "C"
+            "D" -> "D"
+            "E" -> "E"
+            "F" -> "F"
+            else -> {
+                LogManager.addLog(TAG, "🔍 Unrecognized response format: '$response' -> cleaned: '$cleanedResponse'", LogLevel.WARN)
+                "Unknown"
+            }
+        }
+    }
+    
+    /**
+     * New workflow: Launch app, then return to Chrome, then show notification
+     */
+    private fun autoLaunchAppAfterSuccess(question: String, response: String, wasForced: Boolean) {
+        try {
+            if (shouldReturnToChrome) {
+                LogManager.addLog(TAG, "🚀 Starting new workflow: App → Chrome → Notification", LogLevel.INFO)
+                
+                // Step 1: Launch app with maximum visual minimization
+                val launchIntent = Intent(this, com.example.askgpt.MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or 
+                           Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                           Intent.FLAG_ACTIVITY_NO_ANIMATION or // Minimize visual transition
+                           Intent.FLAG_ACTIVITY_NO_USER_ACTION or // Minimize user-visible impact
+                           Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS // Don't add to recent apps
+                    putExtra("AUTO_LAUNCHED_AFTER_SUCCESS", true)
+                    putExtra("PROCESSING_WAS_FORCED", wasForced)
+                    putExtra("LAST_QUESTION", question)
+                    putExtra("LAST_RESPONSE", response)
+                    putExtra("SHOW_RESULT_TAB", true)
+                    putExtra("RETURN_TO_CHROME_IMMEDIATELY", true) // Signal to return to Chrome quickly
+                    putExtra("MINIMIZE_VISUAL_IMPACT", true) // Signal to minimize screen visibility
+                    putExtra("DARK_TRANSITION", true) // Signal for dark transition mode
+                }
+                
+                serviceScope.launch {
+                    try {
+                        // Create initial "blackout" effect
+                        LogManager.addLog(TAG, "🌑 Starting black screen transition effect", LogLevel.INFO)
+                        
+                        // Multiple notification clears for deep blackout
+                        repeat(3) { 
+                            clearAllNotifications()
+                            delay(50)
+                        }
+                        
+                        delay(200) // Brief pause for blackout effect
+                        
+                        // Clear existing notifications for clean transition
+                        clearAllNotifications()
+                        
+                        // Step 1: Launch app and create "dark" transition effect
+                        LogManager.addLog(TAG, "📱 Step 1: Launching app with dark transition effect", LogLevel.INFO)
+                        startActivity(launchIntent)
+                        
+                        // Step 2: Give user sufficient time to see the result in main app
+                        delay(3000) // 3 seconds for user to see the result properly
+                        
+                        // Create deep "blackout" effect before Chrome return
+                        LogManager.addLog(TAG, "🌑 Creating blackout effect before Chrome return", LogLevel.INFO)
+                        repeat(5) { 
+                            clearAllNotifications()
+                            delay(50)
+                        }
+                        
+                        // Additional blackout pause
+                        delay(200)
+                        
+                        // Step 3: Return to Chrome with dark transition
+                        LogManager.addLog(TAG, "🌐 Step 2: Returning to Chrome browser with dark transition", LogLevel.INFO)
+                        launchChromeApp()
+                        
+                        // Final blackout effect after Chrome launch
+                        delay(100)
+                        repeat(3) { 
+                            clearAllNotifications()
+                            delay(50)
+                        }
+                        
+                        // Step 4: Minimal delay before finalizing
+                        delay(200) // Brief final pause
+                        LogManager.addLog(TAG, "🔔 Step 3: Final notification ready", LogLevel.INFO)
+                        LogManager.addLog(TAG, "🌑 Black transition effect completed", LogLevel.SUCCESS)
+                        
+                        LogManager.addLog(TAG, "✅ New workflow completed: App → Chrome → Ready", LogLevel.SUCCESS)
+                        
+                    } catch (e: Exception) {
+                        LogManager.addLog(TAG, "❌ Error in new workflow: ${e.message}", LogLevel.ERROR)
+                    }
+                }
+                
+            } else {
+                // Original workflow - just launch app
+                LogManager.addLog(TAG, "🚀 Original workflow: Auto-launching app to show result", LogLevel.INFO)
+                
+                val launchIntent = Intent(this, com.example.askgpt.MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra("AUTO_LAUNCHED_AFTER_SUCCESS", true)
+                    putExtra("PROCESSING_WAS_FORCED", wasForced)
+                    putExtra("LAST_QUESTION", question)
+                    putExtra("LAST_RESPONSE", response)
+                    putExtra("SHOW_RESULT_TAB", true)
+                }
+                
+                serviceScope.launch {
+                    delay(1000) // 1 second delay
+                    
+                    try {
+                        startActivity(launchIntent)
+                        LogManager.addLog(TAG, "✅ App auto-launched successfully", LogLevel.SUCCESS)
+                    } catch (e: Exception) {
+                        LogManager.addLog(TAG, "❌ Failed to auto-launch app: ${e.message}", LogLevel.ERROR)
+                    }
+                }
+            }
+            
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "❌ Error in auto-launch setup: ${e.message}", LogLevel.ERROR)
+        }
+    }
+    
+    /**
+     * Launch Chrome browser app for return workflow
+     */
+    private fun launchChromeApp() {
+        try {
+            // Try multiple Chrome package names for different Chrome variants
+            val chromePackages = listOf(
+                "com.android.chrome",           // Chrome
+                "com.chrome.beta",              // Chrome Beta
+                "com.chrome.dev",               // Chrome Dev
+                "com.chrome.canary",            // Chrome Canary
+                "com.google.android.apps.chrome" // Alternative Chrome package
+            )
+            
+            var chromeLaunched = false
+            
+            for (packageName in chromePackages) {
+                try {
+                    val chromeIntent = packageManager.getLaunchIntentForPackage(packageName)
+                    if (chromeIntent != null) {
+                        chromeIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                        startActivity(chromeIntent)
+                        LogManager.addLog(TAG, "✅ Chrome launched successfully: $packageName", LogLevel.SUCCESS)
+                        chromeLaunched = true
+                        break
+                    }
+                } catch (e: Exception) {
+                    LogManager.addLog(TAG, "⚠️ Failed to launch $packageName: ${e.message}", LogLevel.DEBUG)
+                }
+            }
+            
+            // Fallback: Try to open any browser
+            if (!chromeLaunched) {
+                LogManager.addLog(TAG, "🔄 Chrome not found, trying default browser", LogLevel.WARN)
+                val browserIntent = Intent(Intent.ACTION_VIEW).apply {
+                    data = android.net.Uri.parse("https://www.google.com")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                }
+                startActivity(browserIntent)
+                LogManager.addLog(TAG, "✅ Default browser launched as fallback", LogLevel.INFO)
+            }
+            
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "❌ Failed to launch any browser: ${e.message}", LogLevel.ERROR)
+        }
+    }
+    
+    /**
+     * Clear all notifications for "light off" effect during transitions
+     */
+    private fun clearAllNotifications() {
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancelAll()
+            LogManager.addLog(TAG, "🔄 Cleared all notifications for clean transition", LogLevel.DEBUG)
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "⚠️ Failed to clear notifications: ${e.message}", LogLevel.WARN)
+        }
+    }
+    
+    /**
+     * Show processing notification during the entire processing time
+     */
+    private fun showProcessingNotification() {
+        try {
+            val processingNotification = notificationHelper.createChatGPTNotification("⏳", "Processing your request...")
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(PROCESSING_NOTIFICATION_ID, processingNotification)
+            LogManager.addLog(TAG, "⏳ Processing notification shown", LogLevel.DEBUG)
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "⚠️ Failed to show processing notification: ${e.message}", LogLevel.WARN)
+        }
+    }
+    
+    /**
+     * Hide processing notification when processing is complete
+     */
+    private fun hideProcessingNotification() {
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(PROCESSING_NOTIFICATION_ID)
+            LogManager.addLog(TAG, "✅ Processing notification hidden", LogLevel.DEBUG)
+        } catch (e: Exception) {
+            LogManager.addLog(TAG, "⚠️ Failed to hide processing notification: ${e.message}", LogLevel.WARN)
+        }
+    }
 }
